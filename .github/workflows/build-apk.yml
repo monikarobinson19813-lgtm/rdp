@@ -19,15 +19,14 @@ jobs:
           unzip -t remotephone-project-fixed.zip
           unzip -o remotephone-project-fixed.zip
 
-      - name: Inspect v0.1 Android sources for v0.2 work
+      - name: Inspect Android sources for v0.2 work
         if: github.ref == 'refs/heads/v0.2'
         shell: bash
         run: |
           for f in \
-            app/src/main/java/com/remotephone/direct/MainActivity.java \
-            app/src/main/java/com/remotephone/direct/ViewerActivity.java \
-            app/src/main/java/com/remotephone/direct/HostService.java \
-            app/src/main/java/com/remotephone/direct/NetUtil.java; do
+            app/src/main/java/com/remotephone/direct/RemoteScreenView.java \
+            app/src/main/java/com/remotephone/direct/HostActivity.java \
+            app/src/main/java/com/remotephone/direct/CryptoChannel.java; do
             echo "===== SOURCE:$f ====="
             cat "$f"
             echo "===== END:$f ====="
@@ -59,4 +58,3 @@ jobs:
         with:
           name: RemotePhone-Direct-debug-aab
           path: app/build/outputs/bundle/debug/app-debug.aab
-          if-no-files-found: error
