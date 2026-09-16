@@ -45,6 +45,8 @@ export class RelayRoom {
     this.controllerConnectedAt = 0;
     this.lastHostMessageAt = 0;
     this.lastControllerMessageAt = 0;
+    this.hostForwardChain = Promise.resolve();
+    this.controllerForwardChain = Promise.resolve();
   }
 
   async fetch(request) {
@@ -150,39 +152,11 @@ export class RelayRoom {
         }));
       }
 
-      const other = role === "host" ? this.controller : this.host;
-      const forwardAt = Date.now();
-      if (!isOpen(other)) {
-        this.state.waitUntil(this.updateDiag({
-          lastForwardFrom: role,
-          lastForwardAt: forwardAt,
-          lastForwardResult: "peer-not-open",
-          lastForwardBytes: size,
-          lastForwardType: type,
-        }));
-        return;
-      }
-
-      try {
-        other.send(event.data);
-        this.state.waitUntil(this.updateDiag({
-          lastForwardFrom: role,
-          lastForwardAt: forwardAt,
-          lastForwardResult: "sent",
-          lastForwardBytes: size,
-          lastForwardType: type,
-          lastForwardError: "",
-        }));
-      } catch (e) {
-        this.state.waitUntil(this.updateDiag({
-          lastForwardFrom: role,
-          lastForwardAt: forwardAt,
-          lastForwardResult: "send-error",
-          lastForwardBytes: size,
-          lastForwardType: type,
-          lastForwardError: safeError(e),
-        }));
-      }
+      const prior = role === "host" ? this.hostForwardChain : this.controllerForwardChain;
+      const next = prior.catch(() => {}).then(() => this.forwardMessage(role, event.data, size, type));
+      if (role === "host") this.hostForwardChain = next;
+      else this.controllerForwardChain = next;
+      this.state.waitUntil(next.catch(() => {}));
     });
 
     const cleanup = () => {
@@ -206,6 +180,44 @@ export class RelayRoom {
     return new Response(null, { status: 101, webSocket: client });
   }
 
+  async forwardMessage(role, data, size, type) {
+    const other = role === "host" ? this.controller : this.host;
+    const forwardAt = Date.now();
+    if (!isOpen(other)) {
+      await this.updateDiag({
+        lastForwardFrom: role,
+        lastForwardAt: forwardAt,
+        lastForwardResult: "peer-not-open",
+        lastForwardBytes: size,
+        lastForwardType: type,
+      });
+      return;
+    }
+
+    try {
+      const payload = await normalizeWebSocketData(data);
+      other.send(payload);
+      await this.updateDiag({
+        lastForwardFrom: role,
+        lastForwardAt: forwardAt,
+        lastForwardResult: "sent",
+        lastForwardBytes: size,
+        lastForwardType: type,
+        lastForwardWireType: messageType(payload),
+        lastForwardError: "",
+      });
+    } catch (e) {
+      await this.updateDiag({
+        lastForwardFrom: role,
+        lastForwardAt: forwardAt,
+        lastForwardResult: "send-error",
+        lastForwardBytes: size,
+        lastForwardType: type,
+        lastForwardError: safeError(e),
+      });
+    }
+  }
+
   async updateDiag(patch) {
     const current = await this.state.storage.get("diag") || {};
     await this.state.storage.put("diag", { ...current, ...patch });
@@ -220,6 +232,13 @@ export class RelayRoom {
 
 function isOpen(ws) {
   return !!ws && ws.readyState === 1;
+}
+
+async function normalizeWebSocketData(data) {
+  if (typeof Blob !== "undefined" && data instanceof Blob) {
+    return await data.arrayBuffer();
+  }
+  return data;
 }
 
 function messageSize(data) {
