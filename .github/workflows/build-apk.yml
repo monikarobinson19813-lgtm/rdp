@@ -12,8 +12,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract Android project
-        run: unzip -o remotephone-project.zip
+      - name: Rebuild Android source package
+        shell: bash
+        run: |
+          cat source-parts/part*.b64 | tr -d '\r\n' | base64 --decode > remotephone-project-fixed.zip
+          unzip -t remotephone-project-fixed.zip
+          unzip -o remotephone-project-fixed.zip
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
