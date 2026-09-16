@@ -129,6 +129,7 @@ export class RelayRoom {
 
     server.addEventListener("message", event => {
       const size = messageSize(event.data);
+      const type = messageType(event.data);
       if (role === "host") {
         this.hostMessages++;
         this.hostBytes += size;
@@ -136,6 +137,7 @@ export class RelayRoom {
         this.state.waitUntil(this.updateDiag({
           lastHostMessageAt: this.lastHostMessageAt,
           lastHostMessageBytes: size,
+          lastHostMessageType: type,
         }));
       } else {
         this.controllerMessages++;
@@ -144,12 +146,43 @@ export class RelayRoom {
         this.state.waitUntil(this.updateDiag({
           lastControllerMessageAt: this.lastControllerMessageAt,
           lastControllerMessageBytes: size,
+          lastControllerMessageType: type,
         }));
       }
 
       const other = role === "host" ? this.controller : this.host;
-      if (!isOpen(other)) return;
-      try { other.send(event.data); } catch (_) {}
+      const forwardAt = Date.now();
+      if (!isOpen(other)) {
+        this.state.waitUntil(this.updateDiag({
+          lastForwardFrom: role,
+          lastForwardAt: forwardAt,
+          lastForwardResult: "peer-not-open",
+          lastForwardBytes: size,
+          lastForwardType: type,
+        }));
+        return;
+      }
+
+      try {
+        other.send(event.data);
+        this.state.waitUntil(this.updateDiag({
+          lastForwardFrom: role,
+          lastForwardAt: forwardAt,
+          lastForwardResult: "sent",
+          lastForwardBytes: size,
+          lastForwardType: type,
+          lastForwardError: "",
+        }));
+      } catch (e) {
+        this.state.waitUntil(this.updateDiag({
+          lastForwardFrom: role,
+          lastForwardAt: forwardAt,
+          lastForwardResult: "send-error",
+          lastForwardBytes: size,
+          lastForwardType: type,
+          lastForwardError: safeError(e),
+        }));
+      }
     });
 
     const cleanup = () => {
@@ -193,7 +226,21 @@ function messageSize(data) {
   if (typeof data === "string") return new TextEncoder().encode(data).length;
   if (data instanceof ArrayBuffer) return data.byteLength;
   if (ArrayBuffer.isView(data)) return data.byteLength;
+  if (typeof Blob !== "undefined" && data instanceof Blob) return data.size;
   return 0;
+}
+
+function messageType(data) {
+  if (typeof data === "string") return "string";
+  if (data instanceof ArrayBuffer) return "ArrayBuffer";
+  if (ArrayBuffer.isView(data)) return data.constructor?.name || "TypedArray";
+  if (typeof Blob !== "undefined" && data instanceof Blob) return "Blob";
+  return Object.prototype.toString.call(data);
+}
+
+function safeError(e) {
+  if (!e) return "unknown";
+  return String(e.message || e);
 }
 
 async function sha256Hex(text) {
