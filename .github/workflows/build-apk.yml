@@ -37,6 +37,7 @@ jobs:
               cp -f v0.3-overrides/AndroidManifest.xml app/src/main/AndroidManifest.xml
             fi
           fi
+          grep -q 'import android.widget.Toast;' app/src/main/java/com/remotephone/direct/HostService.java || sed -i '/import android.view.WindowManager;/a import android.widget.Toast;' app/src/main/java/com/remotephone/direct/HostService.java
           cat >> app/build.gradle <<'EOF'
 
           dependencies {
