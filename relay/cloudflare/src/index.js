@@ -54,7 +54,8 @@ export class RelayRoom {
       return new Response("Host offline", { status: 404 });
     }
     if (isOpen(this.controller)) {
-      return new Response("Host busy", { status: 409 });
+      try { this.controller.close(1012, "Controller reconnected"); } catch (_) {}
+      this.controller = null;
     }
     return this.acceptSocket("controller");
   }
