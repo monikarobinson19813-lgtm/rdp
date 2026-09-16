@@ -200,7 +200,7 @@ public class HostService extends Service {
         wm.getDefaultDisplay().getRealMetrics(dm);
         int newPhysicalWidth = dm.widthPixels;
         int newPhysicalHeight = dm.heightPixels;
-        int newStreamWidth = Math.min(600, newPhysicalWidth);
+        int newStreamWidth = Math.min(720, newPhysicalWidth);
         int newStreamHeight = Math.max(2, (int)Math.round((double)newPhysicalHeight * newStreamWidth / newPhysicalWidth));
         if ((newStreamHeight & 1) == 1) newStreamHeight--;
         int newDensity = Math.max(160, (int)(dm.densityDpi * ((double)newStreamWidth / newPhysicalWidth)));
@@ -219,7 +219,7 @@ public class HostService extends Service {
         reader = ImageReader.newInstance(captureW, captureH, PixelFormat.RGBA_8888, 2);
         reader.setOnImageAvailableListener(r -> {
             long now = SystemClock.elapsedRealtime();
-            if (now - lastFrameAt < 125 || !encodeBusy.compareAndSet(false, true)) {
+            if (now - lastFrameAt < 83 || !encodeBusy.compareAndSet(false, true)) {
                 Image skip = r.acquireLatestImage();
                 if (skip != null) skip.close();
                 return;
