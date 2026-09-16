@@ -19,18 +19,13 @@ jobs:
           unzip -t remotephone-project-fixed.zip
           unzip -o remotephone-project-fixed.zip
 
-      - name: Inspect Android sources for v0.2 work
+      - name: Apply v0.2 Android overrides
         if: github.ref == 'refs/heads/v0.2'
         shell: bash
         run: |
-          for f in \
-            app/src/main/java/com/remotephone/direct/RemoteScreenView.java \
-            app/src/main/java/com/remotephone/direct/HostActivity.java \
-            app/src/main/java/com/remotephone/direct/CryptoChannel.java; do
-            echo "===== SOURCE:$f ====="
-            cat "$f"
-            echo "===== END:$f ====="
-          done
+          cp v0.2-overrides/RemoteScreenView.java app/src/main/java/com/remotephone/direct/RemoteScreenView.java
+          cp v0.2-overrides/ViewerActivity.java app/src/main/java/com/remotephone/direct/ViewerActivity.java
+          cp v0.2-overrides/HostActivity.java app/src/main/java/com/remotephone/direct/HostActivity.java
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -49,12 +44,13 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: RemotePhone-Direct-debug-apk
+          name: RemotePhone-Direct-v0.2-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
       - name: Upload AAB
         uses: actions/upload-artifact@v4
         with:
-          name: RemotePhone-Direct-debug-aab
+          name: RemotePhone-Direct-v0.2-debug-aab
           path: app/build/outputs/bundle/debug/app-debug.aab
+          if-no-files-found: error
