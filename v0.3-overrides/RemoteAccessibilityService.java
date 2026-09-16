@@ -2,6 +2,7 @@ package com.remotephone.direct;
 
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
+import android.app.KeyguardManager;
 import android.graphics.Path;
 import android.os.Bundle;
 import android.util.DisplayMetrics;
@@ -9,7 +10,14 @@ import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
-/** Host-side accessibility bridge. v0.3.1 adds simultaneous two-finger gestures. */
+import java.util.List;
+
+/**
+ * Host-side accessibility bridge.
+ * v0.3.1 adds simultaneous two-finger gestures.
+ * v0.3.2 adds a best-effort, user-initiated lock-screen credential submit path.
+ * Credentials are never stored by this service.
+ */
 public class RemoteAccessibilityService extends AccessibilityService {
     private static volatile RemoteAccessibilityService instance;
 
@@ -39,6 +47,12 @@ public class RemoteAccessibilityService extends AccessibilityService {
         RemoteAccessibilityService s = instance;
         if (s == null || text == null) return;
         try {
+            KeyguardManager km = (KeyguardManager)s.getSystemService(KEYGUARD_SERVICE);
+            if (km != null && km.isKeyguardLocked()) {
+                submitUnlockCredential(s, text);
+                return;
+            }
+
             AccessibilityNodeInfo root = s.getRootInActiveWindow();
             if (root == null) return;
             AccessibilityNodeInfo node = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
@@ -47,6 +61,101 @@ public class RemoteAccessibilityService extends AccessibilityService {
             args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
             node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
         } catch (Exception ignored) {}
+    }
+
+    /**
+     * Best-effort only. Android/OEM policy may hide or block secure keyguard nodes.
+     * Supports editable password/PIN fields when exposed, and PIN keypads whose
+     * digit buttons are exposed to Accessibility. Pattern unlock is not handled.
+     */
+    private static boolean submitUnlockCredential(RemoteAccessibilityService s, String credential) {
+        if (credential == null || credential.length() < 1 || credential.length() > 64) return false;
+        try {
+            AccessibilityNodeInfo root = s.getRootInActiveWindow();
+            if (root == null) return false;
+
+            AccessibilityNodeInfo editable = findEditable(root);
+            if (editable != null) {
+                Bundle args = new Bundle();
+                args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, credential);
+                boolean set = editable.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
+                if (!set) return false;
+                root = s.getRootInActiveWindow();
+                clickConfirmIfPresent(root);
+                return true;
+            }
+
+            for (int i = 0; i < credential.length(); i++) {
+                char ch = credential.charAt(i);
+                if (!Character.isDigit(ch)) return false;
+                root = s.getRootInActiveWindow();
+                if (root == null) return false;
+                AccessibilityNodeInfo digit = findNodeByExactLabel(root, String.valueOf(ch));
+                if (digit == null || !clickNodeOrParent(digit)) return false;
+                try { Thread.sleep(55); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return false; }
+            }
+
+            root = s.getRootInActiveWindow();
+            clickConfirmIfPresent(root);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static AccessibilityNodeInfo findEditable(AccessibilityNodeInfo node) {
+        if (node == null) return null;
+        if (node.isEditable()) return node;
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo found = findEditable(node.getChild(i));
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private static AccessibilityNodeInfo findNodeByExactLabel(AccessibilityNodeInfo root, String label) {
+        if (root == null || label == null) return null;
+        List<AccessibilityNodeInfo> matches = root.findAccessibilityNodeInfosByText(label);
+        if (matches != null) {
+            for (AccessibilityNodeInfo n : matches) {
+                if (n == null) continue;
+                CharSequence t = n.getText();
+                CharSequence d = n.getContentDescription();
+                if ((t != null && label.contentEquals(t)) || (d != null && label.contentEquals(d))) return n;
+            }
+        }
+        return findNodeRecursive(root, label);
+    }
+
+    private static AccessibilityNodeInfo findNodeRecursive(AccessibilityNodeInfo node, String label) {
+        if (node == null) return null;
+        CharSequence t = node.getText();
+        CharSequence d = node.getContentDescription();
+        if ((t != null && label.equalsIgnoreCase(t.toString().trim())) ||
+                (d != null && label.equalsIgnoreCase(d.toString().trim()))) return node;
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo found = findNodeRecursive(node.getChild(i), label);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private static boolean clickNodeOrParent(AccessibilityNodeInfo node) {
+        AccessibilityNodeInfo cur = node;
+        for (int i = 0; cur != null && i < 5; i++) {
+            if (cur.isClickable() && cur.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true;
+            cur = cur.getParent();
+        }
+        return false;
+    }
+
+    private static void clickConfirmIfPresent(AccessibilityNodeInfo root) {
+        if (root == null) return;
+        String[] labels = new String[]{"OK", "Enter", "Done", "Unlock", "Submit"};
+        for (String label : labels) {
+            AccessibilityNodeInfo node = findNodeRecursive(root, label);
+            if (node != null && clickNodeOrParent(node)) return;
+        }
     }
 
     public static void gesture(float x1, float y1, float x2, float y2, long duration) {
