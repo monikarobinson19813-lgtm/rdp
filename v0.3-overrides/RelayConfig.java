@@ -1,9 +1,8 @@
 package com.remotephone.direct;
 
 public final class RelayConfig {
-    // Filled after the Cloudflare Worker is deployed. Keeping this in one file
-    // makes the relay endpoint easy to replace without touching session logic.
-    public static final String BASE_URL = "";
+    // Cloudflare relay endpoint for internet Remote ID routing.
+    public static final String BASE_URL = "https://remotephone-relay.monikarobinson19813.workers.dev";
 
     private RelayConfig() {}
 
