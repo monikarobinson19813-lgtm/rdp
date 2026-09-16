@@ -19,19 +19,6 @@ jobs:
           unzip -t remotephone-project-fixed.zip
           unzip -o remotephone-project-fixed.zip
 
-      - name: Show v0.3 source reference
-        if: github.ref == 'refs/heads/v0.3'
-        shell: bash
-        run: |
-          echo '===== MainActivity.java ====='
-          cat app/src/main/java/com/remotephone/direct/MainActivity.java
-          echo '===== HostService.java ====='
-          cat app/src/main/java/com/remotephone/direct/HostService.java
-          echo '===== CryptoChannel.java ====='
-          cat app/src/main/java/com/remotephone/direct/CryptoChannel.java
-          echo '===== AndroidManifest.xml ====='
-          cat app/src/main/AndroidManifest.xml
-
       - name: Apply v0.2 Android overrides
         if: github.ref == 'refs/heads/v0.2' || github.ref == 'refs/heads/v0.3'
         shell: bash
@@ -46,6 +33,9 @@ jobs:
         run: |
           if [ -d v0.3-overrides ]; then
             cp -f v0.3-overrides/*.java app/src/main/java/com/remotephone/direct/
+            if [ -f v0.3-overrides/AndroidManifest.xml ]; then
+              cp -f v0.3-overrides/AndroidManifest.xml app/src/main/AndroidManifest.xml
+            fi
           fi
 
       - name: Set up JDK 17
