@@ -26,6 +26,10 @@ public class RemoteAccessibilityService extends AccessibilityService {
         super.onDestroy();
     }
 
+    public static boolean isReady() {
+        return instance != null;
+    }
+
     public static void global(int action) {
         RemoteAccessibilityService s = instance;
         if (s != null) s.performGlobalAction(action);
