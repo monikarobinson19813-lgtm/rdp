@@ -200,7 +200,7 @@ public class HostService extends Service {
         wm.getDefaultDisplay().getRealMetrics(dm);
         int newPhysicalWidth = dm.widthPixels;
         int newPhysicalHeight = dm.heightPixels;
-        int newStreamWidth = Math.min(720, newPhysicalWidth);
+        int newStreamWidth = Math.min(600, newPhysicalWidth);
         int newStreamHeight = Math.max(2, (int)Math.round((double)newPhysicalHeight * newStreamWidth / newPhysicalWidth));
         if ((newStreamHeight & 1) == 1) newStreamHeight--;
         int newDensity = Math.max(160, (int)(dm.densityDpi * ((double)newStreamWidth / newPhysicalWidth)));
