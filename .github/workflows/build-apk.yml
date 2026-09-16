@@ -2,7 +2,7 @@ name: Build Android Test Artifacts
 
 on:
   push:
-    branches: [ main, v0.2 ]
+    branches: [ main, v0.2, v0.3 ]
   workflow_dispatch:
 
 jobs:
@@ -19,13 +19,34 @@ jobs:
           unzip -t remotephone-project-fixed.zip
           unzip -o remotephone-project-fixed.zip
 
+      - name: Show v0.3 source reference
+        if: github.ref == 'refs/heads/v0.3'
+        shell: bash
+        run: |
+          echo '===== MainActivity.java ====='
+          cat app/src/main/java/com/remotephone/direct/MainActivity.java
+          echo '===== HostService.java ====='
+          cat app/src/main/java/com/remotephone/direct/HostService.java
+          echo '===== CryptoChannel.java ====='
+          cat app/src/main/java/com/remotephone/direct/CryptoChannel.java
+          echo '===== AndroidManifest.xml ====='
+          cat app/src/main/AndroidManifest.xml
+
       - name: Apply v0.2 Android overrides
-        if: github.ref == 'refs/heads/v0.2'
+        if: github.ref == 'refs/heads/v0.2' || github.ref == 'refs/heads/v0.3'
         shell: bash
         run: |
           cp v0.2-overrides/RemoteScreenView.java app/src/main/java/com/remotephone/direct/RemoteScreenView.java
           cp v0.2-overrides/ViewerActivity.java app/src/main/java/com/remotephone/direct/ViewerActivity.java
           cp v0.2-overrides/HostActivity.java app/src/main/java/com/remotephone/direct/HostActivity.java
+
+      - name: Apply v0.3 Android overrides
+        if: github.ref == 'refs/heads/v0.3'
+        shell: bash
+        run: |
+          if [ -d v0.3-overrides ]; then
+            cp -f v0.3-overrides/*.java app/src/main/java/com/remotephone/direct/
+          fi
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -44,13 +65,13 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: RemotePhone-Direct-v0.2-debug-apk
+          name: RemotePhone-Direct-${{ github.ref_name }}-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
       - name: Upload AAB
         uses: actions/upload-artifact@v4
         with:
-          name: RemotePhone-Direct-v0.2-debug-aab
+          name: RemotePhone-Direct-${{ github.ref_name }}-debug-aab
           path: app/build/outputs/bundle/debug/app-debug.aab
           if-no-files-found: error
