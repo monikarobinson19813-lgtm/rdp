@@ -27,6 +27,8 @@ public class ViewerActivity extends Activity {
     private volatile CryptoChannel channel;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private volatile boolean audioOn;
+    private volatile boolean manualDisconnect;
+    private volatile boolean destroyed;
     private AudioTrack audioTrack;
 
     @Override public void onCreate(Bundle b) {
@@ -44,7 +46,7 @@ public class ViewerActivity extends Activity {
         connectScroll.addView(connectPanel);
 
         connectPanel.addView(text("CONTROLLER — v0.3", 27));
-        connectPanel.addView(text("Choose a saved Host or add a new Host using its Remote ID.", 15));
+        connectPanel.addView(text("Choose a saved Host or add a Host using its Remote ID.", 15));
 
         TextView myHostsTitle = text("My Hosts", 20);
         myHostsTitle.setPadding(0, 24, 0, 8);
@@ -82,7 +84,7 @@ public class ViewerActivity extends Activity {
         advanced.setText("ADVANCED LOCAL TEST");
         connectPanel.addView(advanced);
         address = new EditText(this);
-        address.setHint("Local address, e.g. 192.168.1.25:49200");
+        address.setHint("Optional local address, e.g. 192.168.1.25:49200");
         address.setSingleLine(true);
         address.setVisibility(View.GONE);
         connectPanel.addView(address);
@@ -90,7 +92,7 @@ public class ViewerActivity extends Activity {
         Button connect = new Button(this);
         connect.setText("CONNECT TO HOST");
         connectPanel.addView(connect);
-        status = text("Not connected", 14);
+        status = text(RelayConfig.isConfigured() ? "Internet Remote ID connection ready" : "Internet relay deployment pending; local test remains available", 14);
         connectPanel.addView(status);
         root.addView(connectScroll, new LinearLayout.LayoutParams(-1, -1));
 
@@ -149,7 +151,7 @@ public class ViewerActivity extends Activity {
             advanced.setText(show ? "HIDE ADVANCED LOCAL TEST" : "ADVANCED LOCAL TEST");
         });
         connect.setOnClickListener(v -> connectNow());
-        disconnect.setOnClickListener(v -> disconnect());
+        disconnect.setOnClickListener(v -> userDisconnect());
         back.setOnClickListener(v -> sendNav(CryptoChannel.NAV_BACK));
         home.setOnClickListener(v -> sendNav(CryptoChannel.NAV_HOME));
         recent.setOnClickListener(v -> sendNav(CryptoChannel.NAV_RECENTS));
@@ -232,11 +234,11 @@ public class ViewerActivity extends Activity {
         refreshHosts();
     }
 
-    private void enterViewerUi() {
+    private void enterViewerUi(String message) {
         connectPanel.setVisibility(View.GONE);
         ((View)connectPanel.getParent()).setVisibility(View.GONE);
         remotePanel.setVisibility(View.VISIBLE);
-        remoteStatus.setText("Connected — checking Host status…");
+        remoteStatus.setText(message);
         getWindow().getDecorView().setSystemUiVisibility(
                 View.SYSTEM_UI_FLAG_FULLSCREEN |
                 View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
@@ -258,59 +260,94 @@ public class ViewerActivity extends Activity {
     }
 
     private void connectNow() {
-        String id = digits(remoteId.getText().toString());
-        String c = code.getText().toString().trim();
-        String a = address.getText().toString().trim();
+        final String id = digits(remoteId.getText().toString());
+        final String pin = code.getText().toString().trim();
+        final String localAddress = address.getText().toString().trim();
 
         if (id.length() != 9) {
             status.setText("Enter the Host's 9-digit Remote ID");
             return;
         }
-        if (c.length() != 6) {
+        if (pin.length() != 6) {
             status.setText("Enter the Host's 6-digit session PIN");
             return;
         }
-        if (a.isEmpty()) {
-            status.setText("Remote ID internet routing is the next v0.3 networking step. For this development build, open Advanced Local Test and enter the Host address.");
+        if (localAddress.isEmpty() && !RelayConfig.isConfigured()) {
+            status.setText("Internet relay is not deployed yet. For now, use Advanced Local Test on the same network.");
             return;
         }
 
-        String[] hp = a.split(":");
-        if (hp.length != 2) { status.setText("Advanced local address must be IP:port"); return; }
-        String host = hp[0];
-        int port;
-        try { port = Integer.parseInt(hp[1]); }
-        catch (Exception e) { status.setText("Invalid local test port"); return; }
-
         saveCurrentHost();
-        status.setText("Connecting to Host…");
-        io.execute(() -> {
-            try {
-                Socket s = new Socket();
-                s.connect(new InetSocketAddress(host, port), 10000);
-                CryptoChannel ch = CryptoChannel.connect(s, c);
-                channel = ch;
-                runOnUiThread(() -> { enterViewerUi(); Toast.makeText(this, "Connected to Host", Toast.LENGTH_SHORT).show(); });
-                readLoop(ch);
-            } catch (Exception e) {
-                runOnUiThread(() -> status.setText("Connection failed: " + safeMessage(e)));
-            }
-        });
+        manualDisconnect = false;
+        status.setText(localAddress.isEmpty() ? "Finding Host by Remote ID…" : "Connecting to Host locally…");
+        io.execute(() -> connectionLoop(id, pin, localAddress));
     }
 
-    private void readLoop(CryptoChannel ch) {
-        try {
-            while (channel == ch) {
-                CryptoChannel.Message m = ch.read();
-                if (m.type == CryptoChannel.TYPE_FRAME) handleFrame(m.payload);
-                else if (m.type == CryptoChannel.TYPE_AUDIO) handleAudio(m.payload);
-                else if (m.type == CryptoChannel.TYPE_STATUS) handleStatus(m.payload);
+    private void connectionLoop(String id, String pin, String localAddress) {
+        boolean everConnected = false;
+        while (!manualDisconnect && !destroyed) {
+            Socket socket = null;
+            CryptoChannel ch = null;
+            try {
+                socket = openTransport(id, localAddress);
+                MyHosts.HostRecord saved = MyHosts.find(this, id);
+                String expectedFingerprint = saved == null ? "" : saved.hostFingerprint;
+                ch = CryptoChannel.connect(socket, pin, expectedFingerprint);
+                MyHosts.pinFingerprint(this, id, ch.peerFingerprint());
+                channel = ch;
+
+                boolean wasReconnect = everConnected;
+                everConnected = true;
+                runOnUiThread(() -> {
+                    if (remotePanel.getVisibility() != View.VISIBLE)
+                        enterViewerUi("Connected — checking Host status…");
+                    else
+                        remoteStatus.setText(wasReconnect ? "Reconnected to Host" : "Connected to Host");
+                    Toast.makeText(this, wasReconnect ? "Reconnected" : "Connected to Host", Toast.LENGTH_SHORT).show();
+                });
+
+                if (audioOn) sendControl(CryptoChannel.CONTROL_AUDIO_ON);
+                readSession(ch);
+                if (manualDisconnect || destroyed) break;
+                runOnUiThread(() -> remoteStatus.setText("Connection lost — reconnecting…"));
+            } catch (Exception e) {
+                if (manualDisconnect || destroyed) break;
+                String message = safeMessage(e);
+                if (!everConnected) {
+                    runOnUiThread(() -> status.setText("Connection failed: " + message));
+                    break;
+                }
+                runOnUiThread(() -> remoteStatus.setText("Reconnecting… " + message));
+            } finally {
+                if (channel == ch) channel = null;
+                if (ch != null) ch.close();
+                else if (socket != null) try { socket.close(); } catch (Exception ignored) {}
             }
-        } catch (Exception ignored) {
-        } finally {
-            if (channel == ch) channel = null;
-            ch.close();
-            runOnUiThread(() -> { leaveViewerUi(); status.setText("Disconnected from Host"); });
+
+            if (!manualDisconnect && !destroyed && everConnected) sleepQuietly(1800);
+        }
+    }
+
+    private Socket openTransport(String id, String localAddress) throws Exception {
+        if (localAddress == null || localAddress.isEmpty()) {
+            return RelaySocket.connectController(id);
+        }
+        String[] hp = localAddress.split(":");
+        if (hp.length != 2) throw new IOException("Advanced local address must be IP:port");
+        int port;
+        try { port = Integer.parseInt(hp[1]); }
+        catch (Exception e) { throw new IOException("Invalid local test port"); }
+        Socket s = new Socket();
+        s.connect(new InetSocketAddress(hp[0], port), 10000);
+        return s;
+    }
+
+    private void readSession(CryptoChannel ch) throws Exception {
+        while (!manualDisconnect && !destroyed && channel == ch) {
+            CryptoChannel.Message m = ch.read();
+            if (m.type == CryptoChannel.TYPE_FRAME) handleFrame(m.payload);
+            else if (m.type == CryptoChannel.TYPE_AUDIO) handleAudio(m.payload);
+            else if (m.type == CryptoChannel.TYPE_STATUS) handleStatus(m.payload);
         }
     }
 
@@ -322,8 +359,7 @@ public class ViewerActivity extends Activity {
     private void handleFrame(byte[] p) {
         try {
             DataInputStream d = new DataInputStream(new ByteArrayInputStream(p));
-            d.readInt(); d.readInt();
-            d.readLong();
+            d.readInt(); d.readInt(); d.readLong();
             int len = d.readInt();
             if (len < 1 || len > p.length) return;
             byte[] jpg = new byte[len];
@@ -357,9 +393,7 @@ public class ViewerActivity extends Activity {
             audioTrack = new AudioTrack(AudioManager.STREAM_MUSIC, sampleRate, mask,
                     AudioFormat.ENCODING_PCM_16BIT, Math.max(min * 2, 8192), AudioTrack.MODE_STREAM);
             audioTrack.play();
-        } catch (Exception e) {
-            audioTrack = null;
-        }
+        } catch (Exception e) { audioTrack = null; }
     }
 
     private synchronized void stopAudioPlayback() {
@@ -372,7 +406,7 @@ public class ViewerActivity extends Activity {
         }
     }
 
-    private void sendGesture(float x1,float y1,float x2,float y2,long duration) {
+    private void sendGesture(float x1, float y1, float x2, float y2, long duration) {
         CryptoChannel ch = channel;
         if (ch == null) return;
         ioSend(() -> {
@@ -402,21 +436,35 @@ public class ViewerActivity extends Activity {
     }
 
     private void ioSend(Throwing r) {
-        new Thread(() -> { try { r.run(); } catch (Exception e) { disconnect(); } }, "remotephone-send").start();
+        new Thread(() -> {
+            try { r.run(); }
+            catch (Exception e) {
+                CryptoChannel c = channel;
+                if (c != null) c.close();
+            }
+        }, "remotephone-send").start();
     }
 
     private interface Throwing { void run() throws Exception; }
 
-    private void disconnect() {
+    private void userDisconnect() {
+        manualDisconnect = true;
         CryptoChannel c = channel;
         channel = null;
+        if (c != null) c.close();
         audioOn = false;
         stopAudioPlayback();
-        if (c != null) c.close();
+        leaveViewerUi();
+        status.setText("Disconnected from Host");
     }
 
     @Override protected void onDestroy() {
-        disconnect();
+        destroyed = true;
+        manualDisconnect = true;
+        CryptoChannel c = channel;
+        channel = null;
+        if (c != null) c.close();
+        stopAudioPlayback();
         io.shutdownNow();
         super.onDestroy();
     }
@@ -450,6 +498,10 @@ public class ViewerActivity extends Activity {
 
     private static String safeMessage(Throwable e) {
         String m = e.getMessage();
-        return m == null ? e.getClass().getSimpleName() : m;
+        return m == null || m.trim().isEmpty() ? e.getClass().getSimpleName() : m;
+    }
+
+    private static void sleepQuietly(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
     }
 }
