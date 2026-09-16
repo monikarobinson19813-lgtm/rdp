@@ -7,13 +7,7 @@ import android.os.Build;
 public class BootReceiver extends BroadcastReceiver {
     @Override public void onReceive(Context context, Intent intent) {
         if (intent == null || !Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) return;
-
-        // HostActivity.getPreferences() stores its settings in the activity-local
-        // shared-preferences file. If this phone has never been configured as a Host,
-        // do not show Host recovery notifications (important for Controller-only phones).
-        String remoteId = context.getSharedPreferences("HostActivity", Context.MODE_PRIVATE)
-                .getString("deviceId", null);
-        if (remoteId == null || remoteId.length() != 9) return;
+        if (!HostConfig.isConfigured(context)) return;
 
         try {
             NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
