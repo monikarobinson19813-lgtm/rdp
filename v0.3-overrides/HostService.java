@@ -280,7 +280,7 @@ public class HostService extends Service {
             Bitmap frame = Bitmap.createBitmap(padded, 0, 0, w, h);
             if (frame != padded) padded.recycle();
             ByteArrayOutputStream jpg = new ByteArrayOutputStream(120_000);
-            frame.compress(Bitmap.CompressFormat.JPEG, 58, jpg);
+            frame.compress(Bitmap.CompressFormat.JPEG, 45, jpg);
             frame.recycle();
             byte[] jpeg = jpg.toByteArray();
             ByteArrayOutputStream payload = new ByteArrayOutputStream(jpeg.length + 20);
