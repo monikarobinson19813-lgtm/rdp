@@ -2,7 +2,7 @@ name: Build Android Test Artifacts
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, v0.2 ]
   workflow_dispatch:
 
 jobs:
@@ -45,4 +45,3 @@ jobs:
         with:
           name: RemotePhone-Direct-debug-aab
           path: app/build/outputs/bundle/debug/app-debug.aab
-          if-no-files-found: error
