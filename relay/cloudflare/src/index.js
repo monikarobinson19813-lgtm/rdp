@@ -124,9 +124,11 @@ export class RelayRoom {
     if (role === "host") {
       this.host = server;
       this.hostConnectedAt = Date.now();
+      this.hostForwardChain = Promise.resolve();
     } else {
       this.controller = server;
       this.controllerConnectedAt = Date.now();
+      this.controllerForwardChain = Promise.resolve();
     }
 
     server.addEventListener("message", event => {
@@ -152,8 +154,9 @@ export class RelayRoom {
         }));
       }
 
+      const peerAtReceive = role === "host" ? this.controller : this.host;
       const prior = role === "host" ? this.hostForwardChain : this.controllerForwardChain;
-      const next = prior.catch(() => {}).then(() => this.forwardMessage(role, event.data, size, type));
+      const next = prior.catch(() => {}).then(() => this.forwardMessage(role, event.data, size, type, server, peerAtReceive));
       if (role === "host") this.hostForwardChain = next;
       else this.controllerForwardChain = next;
       this.state.waitUntil(next.catch(() => {}));
@@ -171,6 +174,12 @@ export class RelayRoom {
       } else if (role === "controller" && this.controller === server) {
         this.controller = null;
         this.state.waitUntil(this.updateDiag({ lastControllerClosedAt: now }));
+        if (isOpen(this.host)) {
+          const oldHost = this.host;
+          this.host = null;
+          try { oldHost.close(1012, "Controller disconnected; reset session"); } catch (_) {}
+          this.state.waitUntil(this.updateDiag({ lastHostResetForControllerAt: now }));
+        }
       }
     };
 
@@ -180,10 +189,21 @@ export class RelayRoom {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  async forwardMessage(role, data, size, type) {
-    const other = role === "host" ? this.controller : this.host;
+  async forwardMessage(role, data, size, type, sourceAtReceive, peerAtReceive) {
+    const sourceNow = role === "host" ? this.host : this.controller;
+    const peerNow = role === "host" ? this.controller : this.host;
     const forwardAt = Date.now();
-    if (!isOpen(other)) {
+    if (sourceNow !== sourceAtReceive || peerNow !== peerAtReceive) {
+      await this.updateDiag({
+        lastForwardFrom: role,
+        lastForwardAt: forwardAt,
+        lastForwardResult: "stale-session-dropped",
+        lastForwardBytes: size,
+        lastForwardType: type,
+      });
+      return;
+    }
+    if (!isOpen(peerAtReceive)) {
       await this.updateDiag({
         lastForwardFrom: role,
         lastForwardAt: forwardAt,
@@ -196,7 +216,7 @@ export class RelayRoom {
 
     try {
       const payload = await normalizeWebSocketData(data);
-      other.send(payload);
+      peerAtReceive.send(payload);
       await this.updateDiag({
         lastForwardFrom: role,
         lastForwardAt: forwardAt,
