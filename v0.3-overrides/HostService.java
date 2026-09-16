@@ -20,6 +20,7 @@ import java.io.*;
 import java.net.*;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -36,9 +37,13 @@ public class HostService extends Service {
     private VirtualDisplay virtualDisplay;
     private ImageReader reader;
     private ServerSocket server;
+    private volatile RelaySocket relaySocket;
     private volatile CryptoChannel channel;
     private volatile String pairingCode;
-    private ExecutorService acceptExecutor, encodeExecutor, audioExecutor;
+    private volatile String remoteId;
+    private KeyPair hostIdentity;
+
+    private ExecutorService acceptExecutor, relayExecutor, encodeExecutor, audioExecutor;
     private final AtomicBoolean encodeBusy = new AtomicBoolean(false);
     private volatile long lastFrameAt;
     private volatile int physicalWidth, physicalHeight, streamWidth, streamHeight, streamDensity;
@@ -53,22 +58,39 @@ public class HostService extends Service {
     @Override public IBinder onBind(Intent i) { return null; }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && ACTION_STOP.equals(intent.getAction())) { stopSelf(); return START_NOT_STICKY; }
+        if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         if (running) return START_STICKY;
         if (intent == null) {
             postNeedsApprovalNotification();
+            stopSelf();
             return START_NOT_STICKY;
         }
 
         pairingCode = intent.getStringExtra(EXTRA_CODE);
+        if (pairingCode == null || pairingCode.length() != 6)
+            pairingCode = HostConfig.getOrCreateSessionPin(this);
+        remoteId = intent.getStringExtra("remotephone.remote_id");
+        if (remoteId == null || remoteId.length() != 9)
+            remoteId = HostConfig.getOrCreateRemoteId(this);
+
         Intent data = (Intent) intent.getParcelableExtra(EXTRA_RESULT_DATA);
         int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED);
-        if (pairingCode == null || data == null || resultCode != Activity.RESULT_OK) return START_NOT_STICKY;
+        if (data == null || resultCode != Activity.RESULT_OK) return START_NOT_STICKY;
+
+        try {
+            hostIdentity = HostIdentity.getOrCreate();
+        } catch (Exception e) {
+            Toast.makeText(this, "Unable to create Host security identity", Toast.LENGTH_LONG).show();
+            return START_NOT_STICKY;
+        }
 
         createNotificationChannel();
         startForeground(NOTIF, new Notification.Builder(this, "remotephone_host")
                 .setContentTitle("RemotePhone Host is ready")
-                .setContentText("Host can accept an encrypted Controller connection")
+                .setContentText(RelayConfig.isConfigured() ? "Internet Remote ID: " + formatRemoteId(remoteId) : "Local testing ready; internet relay not configured")
                 .setSmallIcon(android.R.drawable.stat_sys_upload)
                 .setOngoing(true).build());
 
@@ -78,14 +100,15 @@ public class HostService extends Service {
         startProjection(resultCode, data);
         startDisplayWatcher();
         startAudioCapture();
-        startServer();
+        startLocalServer();
+        if (RelayConfig.isConfigured()) startRelayLoop();
         return START_STICKY;
     }
 
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationManager n = (NotificationManager)getSystemService(NOTIFICATION_SERVICE);
-            n.createNotificationChannel(new NotificationChannel("remotephone_host","RemotePhone Host",NotificationManager.IMPORTANCE_LOW));
+            n.createNotificationChannel(new NotificationChannel("remotephone_host", "RemotePhone Host", NotificationManager.IMPORTANCE_LOW));
         }
     }
 
@@ -95,7 +118,9 @@ public class HostService extends Service {
             Intent open = new Intent(this, HostActivity.class);
             PendingIntent pi = PendingIntent.getActivity(this, 101, open,
                     PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0));
-            Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, "remotephone_host") : new Notification.Builder(this);
+            Notification.Builder b = Build.VERSION.SDK_INT >= 26
+                    ? new Notification.Builder(this, "remotephone_host")
+                    : new Notification.Builder(this);
             b.setContentTitle("RemotePhone Host needs approval")
                     .setContentText("Open Host and approve screen capture again")
                     .setSmallIcon(android.R.drawable.stat_notify_error)
@@ -116,9 +141,7 @@ public class HostService extends Service {
 
     private void registerScreenStateReceiver() {
         screenReceiver = new BroadcastReceiver() {
-            @Override public void onReceive(Context context, Intent intent) {
-                sendHostStatus();
-            }
+            @Override public void onReceive(Context context, Intent intent) { sendHostStatus(); }
         };
         IntentFilter f = new IntentFilter();
         f.addAction(Intent.ACTION_SCREEN_OFF);
@@ -196,15 +219,20 @@ public class HostService extends Service {
         reader = ImageReader.newInstance(captureW, captureH, PixelFormat.RGBA_8888, 2);
         reader.setOnImageAvailableListener(r -> {
             long now = SystemClock.elapsedRealtime();
-            if (now - lastFrameAt < 125 || !encodeBusy.compareAndSet(false,true)) {
-                Image skip = r.acquireLatestImage(); if (skip != null) skip.close(); return;
+            if (now - lastFrameAt < 125 || !encodeBusy.compareAndSet(false, true)) {
+                Image skip = r.acquireLatestImage();
+                if (skip != null) skip.close();
+                return;
             }
             Image img = r.acquireLatestImage();
             if (img == null) { encodeBusy.set(false); return; }
             lastFrameAt = now;
             encodeExecutor.execute(() -> {
                 try { encodeAndSend(img, captureW, captureH); }
-                finally { try { img.close(); } catch(Exception ignored){} encodeBusy.set(false); }
+                finally {
+                    try { img.close(); } catch(Exception ignored) {}
+                    encodeBusy.set(false);
+                }
             });
         }, new Handler(Looper.getMainLooper()));
 
@@ -226,8 +254,10 @@ public class HostService extends Service {
                     new Handler(Looper.getMainLooper()).postDelayed(() -> {
                         try {
                             WindowManager wm = (WindowManager)getSystemService(WINDOW_SERVICE);
-                            DisplayMetrics dm = new DisplayMetrics(); wm.getDefaultDisplay().getRealMetrics(dm);
-                            if (dm.widthPixels != physicalWidth || dm.heightPixels != physicalHeight) configureDisplayCapture();
+                            DisplayMetrics dm = new DisplayMetrics();
+                            wm.getDefaultDisplay().getRealMetrics(dm);
+                            if (dm.widthPixels != physicalWidth || dm.heightPixels != physicalHeight)
+                                configureDisplayCapture();
                         } catch (Exception ignored) {}
                     }, 250);
                 }
@@ -237,18 +267,24 @@ public class HostService extends Service {
     }
 
     private void encodeAndSend(Image image, int w, int h) {
-        CryptoChannel c = channel; if (c == null) return;
+        CryptoChannel c = channel;
+        if (c == null) return;
         try {
-            Image.Plane p = image.getPlanes()[0]; ByteBuffer buf = p.getBuffer();
-            int pixelStride = p.getPixelStride(), rowStride = p.getRowStride();
+            Image.Plane p = image.getPlanes()[0];
+            ByteBuffer buf = p.getBuffer();
+            int pixelStride = p.getPixelStride();
+            int rowStride = p.getRowStride();
             int rowPadding = rowStride - pixelStride * w;
             Bitmap padded = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888);
             padded.copyPixelsFromBuffer(buf);
             Bitmap frame = Bitmap.createBitmap(padded, 0, 0, w, h);
             if (frame != padded) padded.recycle();
-            ByteArrayOutputStream jpg = new ByteArrayOutputStream(120_000); frame.compress(Bitmap.CompressFormat.JPEG, 58, jpg); frame.recycle();
+            ByteArrayOutputStream jpg = new ByteArrayOutputStream(120_000);
+            frame.compress(Bitmap.CompressFormat.JPEG, 58, jpg);
+            frame.recycle();
             byte[] jpeg = jpg.toByteArray();
-            ByteArrayOutputStream payload = new ByteArrayOutputStream(jpeg.length + 20); DataOutputStream d = new DataOutputStream(payload);
+            ByteArrayOutputStream payload = new ByteArrayOutputStream(jpeg.length + 20);
+            DataOutputStream d = new DataOutputStream(payload);
             d.writeInt(w); d.writeInt(h); d.writeLong(System.currentTimeMillis()); d.writeInt(jpeg.length); d.write(jpeg); d.flush();
             c.send(CryptoChannel.TYPE_FRAME, payload.toByteArray());
         } catch (Exception e) { closeChannel(c); }
@@ -262,7 +298,6 @@ public class HostService extends Service {
                     new android.media.AudioPlaybackCaptureConfiguration.Builder(projection)
                             .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
                             .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                            .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
                             .build();
             AudioFormat format = new AudioFormat.Builder()
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
@@ -290,10 +325,7 @@ public class HostService extends Service {
                     try {
                         ByteArrayOutputStream b = new ByteArrayOutputStream(n + 8);
                         DataOutputStream d = new DataOutputStream(b);
-                        d.writeInt(48000);
-                        d.writeInt(1);
-                        d.write(buf, 0, n);
-                        d.flush();
+                        d.writeInt(48000); d.writeInt(1); d.write(buf, 0, n); d.flush();
                         c.send(CryptoChannel.TYPE_AUDIO, b.toByteArray());
                     } catch (Exception e) { closeChannel(c); }
                 }
@@ -304,38 +336,78 @@ public class HostService extends Service {
         }
     }
 
-    private void startServer() {
+    private void startLocalServer() {
         acceptExecutor = Executors.newSingleThreadExecutor();
         acceptExecutor.execute(() -> {
             try {
-                server = new ServerSocket(); server.setReuseAddress(true); server.bind(new InetSocketAddress(PORT));
-                while (!server.isClosed()) {
+                server = new ServerSocket();
+                server.setReuseAddress(true);
+                server.bind(new InetSocketAddress(PORT));
+                while (running && !server.isClosed()) {
                     Socket s = server.accept();
                     CryptoChannel candidate = null;
                     try {
-                        candidate = CryptoChannel.accept(s, pairingCode);
-                        CryptoChannel old = channel; channel = candidate; if (old != null) old.close();
-                        audioEnabled = false;
-                        sendInfo(candidate);
-                        sendHostStatus();
-                        readCommands(candidate);
-                    } catch (Exception e) { if (candidate != null) candidate.close(); else try { s.close(); } catch(Exception ignored){} }
-                    finally { if (channel == candidate) channel = null; audioEnabled = false; }
+                        candidate = CryptoChannel.accept(s, pairingCode, hostIdentity);
+                        runSession(candidate);
+                    } catch (Exception e) {
+                        if (candidate != null) candidate.close();
+                        else try { s.close(); } catch(Exception ignored) {}
+                        sleepQuietly(800);
+                    }
                 }
             } catch (Exception ignored) {}
         });
     }
 
+    private void startRelayLoop() {
+        relayExecutor = Executors.newSingleThreadExecutor();
+        relayExecutor.execute(() -> {
+            while (running && RelayConfig.isConfigured()) {
+                RelaySocket rs = null;
+                CryptoChannel candidate = null;
+                try {
+                    rs = RelaySocket.connectHost(remoteId, HostConfig.getOrCreateRelayToken(this));
+                    relaySocket = rs;
+                    candidate = CryptoChannel.accept(rs, pairingCode, hostIdentity);
+                    runSession(candidate);
+                } catch (Exception ignored) {
+                    if (candidate != null) candidate.close();
+                    else if (rs != null) rs.close();
+                } finally {
+                    if (relaySocket == rs) relaySocket = null;
+                }
+                if (running) sleepQuietly(1500);
+            }
+        });
+    }
+
+    private void runSession(CryptoChannel candidate) throws Exception {
+        CryptoChannel old = channel;
+        channel = candidate;
+        if (old != null && old != candidate) old.close();
+        audioEnabled = false;
+        try {
+            sendInfo(candidate);
+            sendHostStatus();
+            readCommands(candidate);
+        } finally {
+            if (channel == candidate) channel = null;
+            audioEnabled = false;
+            candidate.close();
+        }
+    }
+
     private void sendInfo(CryptoChannel c) {
         try {
-            ByteArrayOutputStream b = new ByteArrayOutputStream(); DataOutputStream d = new DataOutputStream(b);
+            ByteArrayOutputStream b = new ByteArrayOutputStream();
+            DataOutputStream d = new DataOutputStream(b);
             d.writeInt(physicalWidth); d.writeInt(physicalHeight); d.writeInt(streamWidth); d.writeInt(streamHeight); d.flush();
-            c.send(CryptoChannel.TYPE_INFO,b.toByteArray());
-        } catch(Exception ignored){}
+            c.send(CryptoChannel.TYPE_INFO, b.toByteArray());
+        } catch(Exception ignored) {}
     }
 
     private void readCommands(CryptoChannel c) throws Exception {
-        while (c == channel) {
+        while (running && c == channel) {
             CryptoChannel.Message m = c.read();
             if (m.type == CryptoChannel.TYPE_GESTURE) handleGesture(m.payload);
             else if (m.type == CryptoChannel.TYPE_NAV) handleNav(m.payload);
@@ -354,38 +426,60 @@ public class HostService extends Service {
 
     private void handleGesture(byte[] p) throws Exception {
         DataInputStream d = new DataInputStream(new ByteArrayInputStream(p));
-        float x1=d.readFloat(), y1=d.readFloat(), x2=d.readFloat(), y2=d.readFloat(); long duration=d.readLong();
+        float x1=d.readFloat(), y1=d.readFloat(), x2=d.readFloat(), y2=d.readFloat();
+        long duration=d.readLong();
         RemoteAccessibilityService.gesture(x1*physicalWidth, y1*physicalHeight, x2*physicalWidth, y2*physicalHeight, duration);
     }
 
     private void handleNav(byte[] p) {
         if (p.length < 1) return;
-        int action = p[0] == CryptoChannel.NAV_BACK ? android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK :
-                p[0] == CryptoChannel.NAV_HOME ? android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME :
-                android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS;
+        int action = p[0] == CryptoChannel.NAV_BACK
+                ? android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK
+                : p[0] == CryptoChannel.NAV_HOME
+                ? android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME
+                : android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS;
         RemoteAccessibilityService.global(action);
     }
 
     private void handleText(byte[] p) {
-        try { RemoteAccessibilityService.setFocusedText(new String(p, StandardCharsets.UTF_8)); } catch(Exception ignored){}
+        try { RemoteAccessibilityService.setFocusedText(new String(p, StandardCharsets.UTF_8)); }
+        catch(Exception ignored) {}
     }
 
-    private void closeChannel(CryptoChannel c) { if (channel == c) channel = null; c.close(); }
+    private void closeChannel(CryptoChannel c) {
+        if (channel == c) channel = null;
+        c.close();
+    }
+
+    private static void sleepQuietly(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+
+    private static String formatRemoteId(String id) {
+        if (id == null || id.length() != 9) return id;
+        return id.substring(0,3) + " " + id.substring(3,6) + " " + id.substring(6,9);
+    }
 
     @Override public void onDestroy() {
         running = false;
         audioEnabled = false;
-        CryptoChannel c = channel; channel = null; if (c != null) c.close();
-        try { if (server != null) server.close(); } catch(Exception ignored){}
-        try { if (displayManager != null && displayListener != null) displayManager.unregisterDisplayListener(displayListener); } catch(Exception ignored){}
-        try { if (screenReceiver != null) unregisterReceiver(screenReceiver); } catch(Exception ignored){}
-        try { if (audioRecord != null) { audioRecord.stop(); audioRecord.release(); } } catch(Exception ignored){}
+        CryptoChannel c = channel;
+        channel = null;
+        if (c != null) c.close();
+        RelaySocket rs = relaySocket;
+        relaySocket = null;
+        if (rs != null) rs.close();
+        try { if (server != null) server.close(); } catch(Exception ignored) {}
+        try { if (displayManager != null && displayListener != null) displayManager.unregisterDisplayListener(displayListener); } catch(Exception ignored) {}
+        try { if (screenReceiver != null) unregisterReceiver(screenReceiver); } catch(Exception ignored) {}
+        try { if (audioRecord != null) { audioRecord.stop(); audioRecord.release(); } } catch(Exception ignored) {}
         audioRecord = null;
-        try { if (virtualDisplay != null) virtualDisplay.release(); } catch(Exception ignored){}
-        try { if (reader != null) reader.close(); } catch(Exception ignored){}
-        try { if (projection != null) projection.stop(); } catch(Exception ignored){}
-        try { if (cpuWakeLock != null && cpuWakeLock.isHeld()) cpuWakeLock.release(); } catch(Exception ignored){}
+        try { if (virtualDisplay != null) virtualDisplay.release(); } catch(Exception ignored) {}
+        try { if (reader != null) reader.close(); } catch(Exception ignored) {}
+        try { if (projection != null) projection.stop(); } catch(Exception ignored) {}
+        try { if (cpuWakeLock != null && cpuWakeLock.isHeld()) cpuWakeLock.release(); } catch(Exception ignored) {}
         if (acceptExecutor != null) acceptExecutor.shutdownNow();
+        if (relayExecutor != null) relayExecutor.shutdownNow();
         if (encodeExecutor != null) encodeExecutor.shutdownNow();
         if (audioExecutor != null) audioExecutor.shutdownNow();
         super.onDestroy();
