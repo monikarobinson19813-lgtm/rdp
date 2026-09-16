@@ -31,7 +31,7 @@ public class HostActivity extends Activity {
         root.setPadding(40, 56, 40, 40);
         scroll.addView(root);
 
-        root.addView(t("HOST — v0.3", 27));
+        root.addView(t("HOST — v0.3.3", 27));
         root.addView(t("This is the phone kept at home/office and accessed remotely from your Controller.", 15));
 
         friendlyName = new EditText(this);
@@ -162,6 +162,9 @@ public class HostActivity extends Activity {
             i.putExtra("remotephone.host_name", HostConfig.getFriendlyName(this));
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(i); else startService(i);
             hostStatus.setText("Starting Host…");
+            hostStatus.postDelayed(this::refresh, 250);
+            hostStatus.postDelayed(this::refresh, 750);
+            hostStatus.postDelayed(this::refresh, 1500);
         }
     }
 
