@@ -9,7 +9,6 @@ import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.*;
-import java.security.SecureRandom;
 import java.util.List;
 
 public class HostActivity extends Activity {
@@ -22,16 +21,9 @@ public class HostActivity extends Activity {
 
     @Override public void onCreate(Bundle b) {
         super.onCreate(b);
-        pairingCode = getPreferences(MODE_PRIVATE).getString("code", null);
-        if (pairingCode == null || pairingCode.length() != 6) {
-            pairingCode = newCode();
-            getPreferences(MODE_PRIVATE).edit().putString("code", pairingCode).apply();
-        }
-        deviceId = getPreferences(MODE_PRIVATE).getString("deviceId", null);
-        if (deviceId == null || deviceId.length() != 9) {
-            deviceId = newDeviceId();
-            getPreferences(MODE_PRIVATE).edit().putString("deviceId", deviceId).apply();
-        }
+        pairingCode = HostConfig.getOrCreateSessionPin(this);
+        deviceId = HostConfig.getOrCreateRemoteId(this);
+        HostConfig.getOrCreateRelayToken(this);
 
         ScrollView scroll = new ScrollView(this);
         LinearLayout root = new LinearLayout(this);
@@ -45,7 +37,7 @@ public class HostActivity extends Activity {
         friendlyName = new EditText(this);
         friendlyName.setHint("Host name, e.g. Home Host or Office Host");
         friendlyName.setSingleLine(true);
-        friendlyName.setText(getPreferences(MODE_PRIVATE).getString("friendlyName", "Home Host"));
+        friendlyName.setText(HostConfig.getFriendlyName(this));
         root.addView(friendlyName);
         Button saveName = new Button(this);
         saveName.setText("SAVE HOST NAME");
@@ -82,7 +74,7 @@ public class HostActivity extends Activity {
         audioNote.setPadding(0, 18, 0, 6);
         root.addView(audioNote);
 
-        TextView next = t("v0.3 target: your Controller will connect using Remote ID + PIN over the internet. Until that routing layer is active, the local test address remains available below.", 13);
+        TextView next = t("Normal v0.3 connection uses Remote ID + PIN. Advanced local address remains available only for same-network testing.", 13);
         next.setPadding(0, 16, 0, 8);
         root.addView(next);
 
@@ -93,23 +85,20 @@ public class HostActivity extends Activity {
         addressText.setVisibility(View.GONE);
         root.addView(addressText);
 
-        TextView security = t("Security: Remote ID identifies this Host. The 6-digit PIN authorizes a session. Android unlock PIN/password/pattern is never stored by RemotePhone Direct.", 13);
+        TextView security = t("Security: the 6-digit PIN only authorizes the encrypted session. Session encryption uses high-entropy ECDH keys and a persistent Host identity. Android unlock PIN/password/pattern is never stored by RemotePhone Direct.", 13);
         security.setPadding(0, 20, 0, 0);
         root.addView(security);
 
         setContentView(scroll);
 
         saveName.setOnClickListener(v -> {
-            String n = friendlyName.getText().toString().trim();
-            if (n.isEmpty()) n = "Host";
-            getPreferences(MODE_PRIVATE).edit().putString("friendlyName", n).apply();
-            friendlyName.setText(n);
+            HostConfig.setFriendlyName(this, friendlyName.getText().toString());
+            friendlyName.setText(HostConfig.getFriendlyName(this));
             Toast.makeText(this, "Host name saved", Toast.LENGTH_SHORT).show();
         });
         access.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
         rotate.setOnClickListener(v -> {
-            pairingCode = newCode();
-            getPreferences(MODE_PRIVATE).edit().putString("code", pairingCode).apply();
+            pairingCode = HostConfig.rotateSessionPin(this);
             refresh();
         });
         advanced.setOnClickListener(v -> {
@@ -139,6 +128,8 @@ public class HostActivity extends Activity {
     }
 
     private void refresh() {
+        pairingCode = HostConfig.getOrCreateSessionPin(this);
+        deviceId = HostConfig.getOrCreateRemoteId(this);
         accessStatus.setText(RemoteAccessibilityService.isReady() ? "✓ Remote control enabled" : "⚠ Remote control not enabled yet");
         deviceIdText.setText("Remote ID:  " + formatDeviceId(deviceId));
         codeText.setText("Session PIN:  " + pairingCode);
@@ -162,12 +153,13 @@ public class HostActivity extends Activity {
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQ_CAPTURE && resultCode == RESULT_OK && data != null) {
+            HostConfig.setFriendlyName(this, friendlyName.getText().toString());
             Intent i = new Intent(this, HostService.class);
             i.putExtra(HostService.EXTRA_RESULT_CODE, resultCode);
             i.putExtra(HostService.EXTRA_RESULT_DATA, data);
-            i.putExtra(HostService.EXTRA_CODE, pairingCode);
-            i.putExtra("remotephone.remote_id", deviceId);
-            i.putExtra("remotephone.host_name", friendlyName.getText().toString().trim());
+            i.putExtra(HostService.EXTRA_CODE, HostConfig.getOrCreateSessionPin(this));
+            i.putExtra("remotephone.remote_id", HostConfig.getOrCreateRemoteId(this));
+            i.putExtra("remotephone.host_name", HostConfig.getFriendlyName(this));
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(i); else startService(i);
             hostStatus.setText("Starting Host…");
         }
@@ -180,16 +172,6 @@ public class HostActivity extends Activity {
         v.setGravity(Gravity.START);
         v.setPadding(0, 10, 0, 10);
         return v;
-    }
-
-    private static String newCode() {
-        SecureRandom r = new SecureRandom();
-        return String.format(java.util.Locale.US, "%06d", r.nextInt(1_000_000));
-    }
-
-    private static String newDeviceId() {
-        SecureRandom r = new SecureRandom();
-        return String.format(java.util.Locale.US, "%09d", 100_000_000 + r.nextInt(900_000_000));
     }
 
     private static String formatDeviceId(String id) {
