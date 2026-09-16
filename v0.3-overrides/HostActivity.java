@@ -78,8 +78,12 @@ public class HostActivity extends Activity {
         hostStatus = t("Host stopped", 16);
         root.addView(hostStatus);
 
+        TextView audioNote = t("Remote audio needs Microphone permission only because Android requires RECORD_AUDIO permission for playback capture. RemotePhone does not use the Host microphone in v0.3.", 13);
+        audioNote.setPadding(0, 18, 0, 6);
+        root.addView(audioNote);
+
         TextView next = t("v0.3 target: your Controller will connect using Remote ID + PIN over the internet. Until that routing layer is active, the local test address remains available below.", 13);
-        next.setPadding(0, 22, 0, 8);
+        next.setPadding(0, 16, 0, 8);
         root.addView(next);
 
         Button advanced = new Button(this);
@@ -122,7 +126,11 @@ public class HostActivity extends Activity {
         });
 
         refresh();
-        if (Build.VERSION.SDK_INT >= 33) requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 99);
+        if (Build.VERSION.SDK_INT >= 33) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS, Manifest.permission.RECORD_AUDIO}, 99);
+        } else if (Build.VERSION.SDK_INT >= 23) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 98);
+        }
     }
 
     @Override protected void onResume() {
