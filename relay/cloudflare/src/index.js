@@ -49,6 +49,7 @@ export class RelayRoom {
 
   async fetch(request) {
     if (request.headers.get("X-RemotePhone-Debug") === DEBUG_KEY) {
+      const persistent = await this.state.storage.get("diag") || {};
       return Response.json({
         hostOpen: isOpen(this.host),
         controllerOpen: isOpen(this.controller),
@@ -60,6 +61,7 @@ export class RelayRoom {
         controllerConnectedAt: this.controllerConnectedAt,
         lastHostMessageAt: this.lastHostMessageAt,
         lastControllerMessageAt: this.lastControllerMessageAt,
+        persistent,
       });
     }
 
@@ -68,15 +70,25 @@ export class RelayRoom {
       return new Response("Missing role", { status: 400 });
     }
 
+    await this.updateDiag({
+      lastRequestRole: role,
+      lastRequestAt: Date.now(),
+    });
+
     if (role === "host") {
+      await this.bumpDiag("hostAttempts");
       const token = request.headers.get("X-RemotePhone-Host-Token") || "";
-      if (token.length < 32) return new Response("Invalid Host token", { status: 401 });
+      if (token.length < 32) {
+        await this.updateDiag({ lastHostResult: "invalid-token", lastHostResultAt: Date.now() });
+        return new Response("Invalid Host token", { status: 401 });
+      }
 
       const tokenHash = await sha256Hex(token);
       const storedHash = await this.state.storage.get("hostTokenHash");
       if (!storedHash) {
         await this.state.storage.put("hostTokenHash", tokenHash);
       } else if (!timingSafeEqual(storedHash, tokenHash)) {
+        await this.updateDiag({ lastHostResult: "token-mismatch", lastHostResultAt: Date.now() });
         return new Response("Remote ID belongs to another Host", { status: 403 });
       }
 
@@ -84,16 +96,20 @@ export class RelayRoom {
         try { this.host.close(1012, "Host reconnected"); } catch (_) {}
       }
       this.host = null;
+      await this.updateDiag({ lastHostResult: "accepted", lastHostAcceptedAt: Date.now() });
       return this.acceptSocket("host");
     }
 
+    await this.bumpDiag("controllerAttempts");
     if (!isOpen(this.host)) {
+      await this.updateDiag({ lastControllerResult: "host-offline", lastControllerResultAt: Date.now() });
       return new Response("Host offline", { status: 404 });
     }
     if (isOpen(this.controller)) {
       try { this.controller.close(1012, "Controller reconnected"); } catch (_) {}
       this.controller = null;
     }
+    await this.updateDiag({ lastControllerResult: "accepted", lastControllerAcceptedAt: Date.now() });
     return this.acceptSocket("controller");
   }
 
@@ -117,10 +133,18 @@ export class RelayRoom {
         this.hostMessages++;
         this.hostBytes += size;
         this.lastHostMessageAt = Date.now();
+        this.state.waitUntil(this.updateDiag({
+          lastHostMessageAt: this.lastHostMessageAt,
+          lastHostMessageBytes: size,
+        }));
       } else {
         this.controllerMessages++;
         this.controllerBytes += size;
         this.lastControllerMessageAt = Date.now();
+        this.state.waitUntil(this.updateDiag({
+          lastControllerMessageAt: this.lastControllerMessageAt,
+          lastControllerMessageBytes: size,
+        }));
       }
 
       const other = role === "host" ? this.controller : this.host;
@@ -129,14 +153,17 @@ export class RelayRoom {
     });
 
     const cleanup = () => {
+      const now = Date.now();
       if (role === "host" && this.host === server) {
         this.host = null;
+        this.state.waitUntil(this.updateDiag({ lastHostClosedAt: now }));
         if (isOpen(this.controller)) {
           try { this.controller.close(1011, "Host disconnected"); } catch (_) {}
         }
         this.controller = null;
       } else if (role === "controller" && this.controller === server) {
         this.controller = null;
+        this.state.waitUntil(this.updateDiag({ lastControllerClosedAt: now }));
       }
     };
 
@@ -144,6 +171,17 @@ export class RelayRoom {
     server.addEventListener("error", cleanup);
 
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async updateDiag(patch) {
+    const current = await this.state.storage.get("diag") || {};
+    await this.state.storage.put("diag", { ...current, ...patch });
+  }
+
+  async bumpDiag(field) {
+    const current = await this.state.storage.get("diag") || {};
+    current[field] = (current[field] || 0) + 1;
+    await this.state.storage.put("diag", current);
   }
 }
 
