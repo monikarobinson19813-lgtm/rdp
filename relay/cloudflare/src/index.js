@@ -1,9 +1,23 @@
+const DEBUG_KEY = "da8c114f29b55812b9dabbb473815874";
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
     if (url.pathname === "/health") {
       return new Response("RemotePhone relay OK", { status: 200 });
+    }
+
+    const debugMatch = url.pathname.match(/^\/debug\/(\d{9})$/);
+    if (debugMatch) {
+      if (url.searchParams.get("key") !== DEBUG_KEY) {
+        return new Response("Forbidden", { status: 403 });
+      }
+      const roomId = env.RELAY.idFromName(debugMatch[1]);
+      const debugRequest = new Request("https://relay.internal/debug", {
+        headers: { "X-RemotePhone-Debug": DEBUG_KEY },
+      });
+      return env.RELAY.get(roomId).fetch(debugRequest);
     }
 
     const match = url.pathname.match(/^\/relay\/(\d{9})$/);
@@ -23,9 +37,32 @@ export class RelayRoom {
     this.env = env;
     this.host = null;
     this.controller = null;
+    this.hostMessages = 0;
+    this.controllerMessages = 0;
+    this.hostBytes = 0;
+    this.controllerBytes = 0;
+    this.hostConnectedAt = 0;
+    this.controllerConnectedAt = 0;
+    this.lastHostMessageAt = 0;
+    this.lastControllerMessageAt = 0;
   }
 
   async fetch(request) {
+    if (request.headers.get("X-RemotePhone-Debug") === DEBUG_KEY) {
+      return Response.json({
+        hostOpen: isOpen(this.host),
+        controllerOpen: isOpen(this.controller),
+        hostMessages: this.hostMessages,
+        controllerMessages: this.controllerMessages,
+        hostBytes: this.hostBytes,
+        controllerBytes: this.controllerBytes,
+        hostConnectedAt: this.hostConnectedAt,
+        controllerConnectedAt: this.controllerConnectedAt,
+        lastHostMessageAt: this.lastHostMessageAt,
+        lastControllerMessageAt: this.lastControllerMessageAt,
+      });
+    }
+
     const role = (request.headers.get("X-RemotePhone-Role") || "").toLowerCase();
     if (role !== "host" && role !== "controller") {
       return new Response("Missing role", { status: 400 });
@@ -66,10 +103,26 @@ export class RelayRoom {
     const server = pair[1];
     server.accept();
 
-    if (role === "host") this.host = server;
-    else this.controller = server;
+    if (role === "host") {
+      this.host = server;
+      this.hostConnectedAt = Date.now();
+    } else {
+      this.controller = server;
+      this.controllerConnectedAt = Date.now();
+    }
 
     server.addEventListener("message", event => {
+      const size = messageSize(event.data);
+      if (role === "host") {
+        this.hostMessages++;
+        this.hostBytes += size;
+        this.lastHostMessageAt = Date.now();
+      } else {
+        this.controllerMessages++;
+        this.controllerBytes += size;
+        this.lastControllerMessageAt = Date.now();
+      }
+
       const other = role === "host" ? this.controller : this.host;
       if (!isOpen(other)) return;
       try { other.send(event.data); } catch (_) {}
@@ -96,6 +149,13 @@ export class RelayRoom {
 
 function isOpen(ws) {
   return !!ws && ws.readyState === 1;
+}
+
+function messageSize(data) {
+  if (typeof data === "string") return new TextEncoder().encode(data).length;
+  if (data instanceof ArrayBuffer) return data.byteLength;
+  if (ArrayBuffer.isView(data)) return data.byteLength;
+  return 0;
 }
 
 async function sha256Hex(text) {
