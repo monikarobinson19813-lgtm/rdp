@@ -3,6 +3,9 @@ package com.remotephone.direct;
 import android.app.Activity;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.media.AudioFormat;
+import android.media.AudioManager;
+import android.media.AudioTrack;
 import android.os.Bundle;
 import android.text.InputType;
 import android.view.Gravity;
@@ -19,10 +22,12 @@ import java.util.concurrent.Executors;
 public class ViewerActivity extends Activity {
     private LinearLayout connectPanel, remotePanel, hostsList;
     private EditText remoteId, friendlyName, address, code, textInput;
-    private TextView status;
+    private TextView status, remoteStatus;
     private RemoteScreenView screen;
     private volatile CryptoChannel channel;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private volatile boolean audioOn;
+    private AudioTrack audioTrack;
 
     @Override public void onCreate(Bundle b) {
         super.onCreate(b);
@@ -94,19 +99,35 @@ public class ViewerActivity extends Activity {
         remotePanel.setBackgroundColor(0xFF000000);
         remotePanel.setVisibility(View.GONE);
 
+        remoteStatus = new TextView(this);
+        remoteStatus.setText("Host ready");
+        remoteStatus.setTextColor(0xFFFFFFFF);
+        remoteStatus.setTextSize(14);
+        remoteStatus.setGravity(Gravity.CENTER);
+        remoteStatus.setPadding(8, 6, 8, 6);
+        remotePanel.addView(remoteStatus, new LinearLayout.LayoutParams(-1, -2));
+
         screen = new RemoteScreenView(this);
         remotePanel.addView(screen, new LinearLayout.LayoutParams(-1, 0, 1f));
 
         LinearLayout nav = new LinearLayout(this);
         nav.setOrientation(LinearLayout.HORIZONTAL);
         nav.setGravity(Gravity.CENTER);
-        Button back = b("◀"), home = b("●"), recent = b("■"), fit = b("FIT"), disconnect = b("X");
+        Button back = b("◀"), home = b("●"), recent = b("■"), fit = b("FIT");
         nav.addView(back, new LinearLayout.LayoutParams(0, -2, 1));
         nav.addView(home, new LinearLayout.LayoutParams(0, -2, 1));
         nav.addView(recent, new LinearLayout.LayoutParams(0, -2, 1));
         nav.addView(fit, new LinearLayout.LayoutParams(0, -2, 1));
-        nav.addView(disconnect, new LinearLayout.LayoutParams(0, -2, 1));
         remotePanel.addView(nav);
+
+        LinearLayout controls = new LinearLayout(this);
+        controls.setOrientation(LinearLayout.HORIZONTAL);
+        controls.setGravity(Gravity.CENTER);
+        Button wake = b("WAKE HOST"), audio = b("AUDIO OFF"), disconnect = b("DISCONNECT");
+        controls.addView(wake, new LinearLayout.LayoutParams(0, -2, 1));
+        controls.addView(audio, new LinearLayout.LayoutParams(0, -2, 1));
+        controls.addView(disconnect, new LinearLayout.LayoutParams(0, -2, 1));
+        remotePanel.addView(controls);
 
         LinearLayout type = new LinearLayout(this);
         type.setOrientation(LinearLayout.HORIZONTAL);
@@ -132,6 +153,16 @@ public class ViewerActivity extends Activity {
         back.setOnClickListener(v -> sendNav(CryptoChannel.NAV_BACK));
         home.setOnClickListener(v -> sendNav(CryptoChannel.NAV_HOME));
         recent.setOnClickListener(v -> sendNav(CryptoChannel.NAV_RECENTS));
+        wake.setOnClickListener(v -> {
+            remoteStatus.setText("Waking Host…");
+            sendControl(CryptoChannel.CONTROL_WAKE);
+        });
+        audio.setOnClickListener(v -> {
+            audioOn = !audioOn;
+            audio.setText(audioOn ? "AUDIO ON" : "AUDIO OFF");
+            sendControl(audioOn ? CryptoChannel.CONTROL_AUDIO_ON : CryptoChannel.CONTROL_AUDIO_OFF);
+            if (!audioOn) stopAudioPlayback();
+        });
         send.setOnClickListener(v -> { sendText(textInput.getText().toString()); textInput.setText(""); });
         fit.setOnClickListener(v -> {
             boolean next = !screen.isFillMode();
@@ -205,6 +236,7 @@ public class ViewerActivity extends Activity {
         connectPanel.setVisibility(View.GONE);
         ((View)connectPanel.getParent()).setVisibility(View.GONE);
         remotePanel.setVisibility(View.VISIBLE);
+        remoteStatus.setText("Connected — checking Host status…");
         getWindow().getDecorView().setSystemUiVisibility(
                 View.SYSTEM_UI_FLAG_FULLSCREEN |
                 View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
@@ -220,6 +252,8 @@ public class ViewerActivity extends Activity {
         View parent = (View) connectPanel.getParent();
         parent.setVisibility(View.VISIBLE);
         connectPanel.setVisibility(View.VISIBLE);
+        audioOn = false;
+        stopAudioPlayback();
         refreshHosts();
     }
 
@@ -269,6 +303,8 @@ public class ViewerActivity extends Activity {
             while (channel == ch) {
                 CryptoChannel.Message m = ch.read();
                 if (m.type == CryptoChannel.TYPE_FRAME) handleFrame(m.payload);
+                else if (m.type == CryptoChannel.TYPE_AUDIO) handleAudio(m.payload);
+                else if (m.type == CryptoChannel.TYPE_STATUS) handleStatus(m.payload);
             }
         } catch (Exception ignored) {
         } finally {
@@ -276,6 +312,11 @@ public class ViewerActivity extends Activity {
             ch.close();
             runOnUiThread(() -> { leaveViewerUi(); status.setText("Disconnected from Host"); });
         }
+    }
+
+    private void handleStatus(byte[] p) {
+        String s = new String(p, StandardCharsets.UTF_8);
+        runOnUiThread(() -> remoteStatus.setText(s));
     }
 
     private void handleFrame(byte[] p) {
@@ -290,6 +331,45 @@ public class ViewerActivity extends Activity {
             Bitmap bmp = BitmapFactory.decodeByteArray(jpg, 0, jpg.length);
             if (bmp != null) runOnUiThread(() -> screen.setFrame(bmp));
         } catch (Exception ignored) {}
+    }
+
+    private void handleAudio(byte[] p) {
+        if (!audioOn) return;
+        try {
+            DataInputStream d = new DataInputStream(new ByteArrayInputStream(p));
+            int sampleRate = d.readInt();
+            int channels = d.readInt();
+            int len = p.length - 8;
+            if (len <= 0) return;
+            byte[] pcm = new byte[len];
+            d.readFully(pcm);
+            ensureAudioTrack(sampleRate, channels);
+            AudioTrack t = audioTrack;
+            if (t != null) t.write(pcm, 0, pcm.length);
+        } catch (Exception ignored) {}
+    }
+
+    private synchronized void ensureAudioTrack(int sampleRate, int channels) {
+        if (audioTrack != null) return;
+        try {
+            int mask = channels == 2 ? AudioFormat.CHANNEL_OUT_STEREO : AudioFormat.CHANNEL_OUT_MONO;
+            int min = AudioTrack.getMinBufferSize(sampleRate, mask, AudioFormat.ENCODING_PCM_16BIT);
+            audioTrack = new AudioTrack(AudioManager.STREAM_MUSIC, sampleRate, mask,
+                    AudioFormat.ENCODING_PCM_16BIT, Math.max(min * 2, 8192), AudioTrack.MODE_STREAM);
+            audioTrack.play();
+        } catch (Exception e) {
+            audioTrack = null;
+        }
+    }
+
+    private synchronized void stopAudioPlayback() {
+        AudioTrack t = audioTrack;
+        audioTrack = null;
+        if (t != null) {
+            try { t.pause(); } catch (Exception ignored) {}
+            try { t.flush(); } catch (Exception ignored) {}
+            try { t.release(); } catch (Exception ignored) {}
+        }
     }
 
     private void sendGesture(float x1,float y1,float x2,float y2,long duration) {
@@ -309,6 +389,12 @@ public class ViewerActivity extends Activity {
         ioSend(() -> ch.send(CryptoChannel.TYPE_NAV, new byte[]{n}));
     }
 
+    private void sendControl(byte action) {
+        CryptoChannel ch = channel;
+        if (ch == null) return;
+        ioSend(() -> ch.send(CryptoChannel.TYPE_CONTROL, new byte[]{action}));
+    }
+
     private void sendText(String t) {
         CryptoChannel ch = channel;
         if (ch == null || t.isEmpty()) return;
@@ -324,6 +410,8 @@ public class ViewerActivity extends Activity {
     private void disconnect() {
         CryptoChannel c = channel;
         channel = null;
+        audioOn = false;
+        stopAudioPlayback();
         if (c != null) c.close();
     }
 
