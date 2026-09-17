@@ -1,0 +1,61 @@
+--- a/app/src/main/java/com/remotephone/direct/HostService.java
++++ b/app/src/main/java/com/remotephone/direct/HostService.java
+@@ -45,2 +45,3 @@
+     private ExecutorService acceptExecutor, relayExecutor, encodeExecutor, audioExecutor;
++    private final AtomicBoolean relayLoopActive = new AtomicBoolean(false);
+     private final AtomicBoolean encodeBusy = new AtomicBoolean(false);
+@@ -350,21 +351,40 @@
+     private void startRelayLoop() {
++        if (!relayLoopActive.compareAndSet(false, true)) return;
+         relayExecutor = Executors.newSingleThreadExecutor();
+         relayExecutor.execute(() -> {
+-            while (running && RelayConfig.isConfigured()) {
+-                RelaySocket rs = null;
+-                CryptoChannel candidate = null;
+-                try {
+-                    rs = RelaySocket.connectHost(remoteId, HostConfig.getOrCreateRelayToken(this));
+-                    relaySocket = rs;
+-                    candidate = CryptoChannel.accept(rs, pairingCode, hostIdentity);
+-                    runSession(candidate);
+-                } catch (Exception ignored) {
+-                    if (candidate != null) candidate.close();
+-                    else if (rs != null) rs.close();
+-                } finally {
+-                    if (relaySocket == rs) relaySocket = null;
++            long retryDelayMs = 1000L;
++            try {
++                while (running && RelayConfig.isConfigured()) {
++                    RelaySocket rs = null;
++                    CryptoChannel candidate = null;
++                    boolean sessionEstablished = false;
++                    try {
++                        rs = RelaySocket.connectHost(remoteId, HostConfig.getOrCreateRelayToken(this));
++                        if (!running) break;
++                        RelaySocket previous = relaySocket;
++                        relaySocket = rs;
++                        if (previous != null && previous != rs) previous.close();
++
++                        candidate = CryptoChannel.accept(rs, pairingCode, hostIdentity);
++                        sessionEstablished = true;
++                        retryDelayMs = 1000L;
++                        runSession(candidate);
++                    } catch (Exception ignored) {
++                        // The loop below owns recovery; every failed transport is discarded.
++                    } finally {
++                        if (relaySocket == rs) relaySocket = null;
++                        if (candidate != null) candidate.close();
++                        if (rs != null) rs.close();
++                    }
++
++                    if (running && RelayConfig.isConfigured()) {
++                        sleepQuietly(retryDelayMs);
++                        if (!sessionEstablished)
++                            retryDelayMs = Math.min(10000L, retryDelayMs * 2L);
++                    }
+                 }
+-                if (running) sleepQuietly(1500);
++            } finally {
++                relayLoopActive.set(false);
+             }
+         });
+     }
