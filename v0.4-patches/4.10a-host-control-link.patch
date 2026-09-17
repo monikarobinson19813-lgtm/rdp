@@ -1,0 +1,87 @@
+--- a/app/src/main/java/com/remotephone/direct/HostService.java
++++ b/app/src/main/java/com/remotephone/direct/HostService.java
+@@ -49,3 +49,4 @@
+     private ExecutorService acceptExecutor, relayExecutor, encodeExecutor, audioExecutor;
+     private final AtomicBoolean relayLoopActive = new AtomicBoolean(false);
++    private volatile ControlLink controlLink;
+     private final AtomicBoolean encodeBusy = new AtomicBoolean(false);
+@@ -121,4 +122,7 @@
+         startAudioCapture();
+         startLocalServer();
+-        if (RelayConfig.isConfigured()) startRelayLoop();
++        if (RelayConfig.isConfigured()) {
++            startRelayLoop();
++            startControlLink();
++        }
+         return START_STICKY;
+@@ -166,5 +170,8 @@
+         registerScreenStateReceiver();
+         registerNetworkStateReceiver();
+         startLocalServer();
+-        if (RelayConfig.isConfigured()) startRelayLoop();
++        if (RelayConfig.isConfigured()) {
++            startRelayLoop();
++            startControlLink();
++        }
+         postNeedsApprovalNotification();
+@@ -286,6 +293,13 @@
+     private void sendHostStatus() {
++        byte[] payload = hostState().getBytes(StandardCharsets.UTF_8);
+         CryptoChannel c = channel;
+-        if (c == null) return;
+-        try { c.send(CryptoChannel.TYPE_STATUS, hostState().getBytes(StandardCharsets.UTF_8)); }
+-        catch (Exception e) { closeChannel(c); }
++        if (c != null) {
++            try { c.send(CryptoChannel.TYPE_STATUS, payload); }
++            catch (Exception e) { closeChannel(c); }
++        }
++        ControlLink ctl = controlLink;
++        if (ctl != null && ctl.isConnected()) {
++            try { ctl.send(CryptoChannel.TYPE_STATUS, payload); }
++            catch (Exception e) { ctl.reset(); }
++        }
+     }
+@@ -500,1 +514,35 @@
++    private synchronized void startControlLink() {
++        if (!running || !RelayConfig.isConfigured() || controlLink != null) return;
++        ControlLink link = ControlLink.forHost(
++                remoteId,
++                pairingCode,
++                HostConfig.getOrCreateRelayToken(this),
++                hostIdentity,
++                new ControlLink.Listener() {
++                    @Override public void onConnected(String ignored) {
++                        sendHostStatus();
++                    }
++
++                    @Override public void onMessage(CryptoChannel.Message message) {
++                        ControlLink current = controlLink;
++                        if (current == null) return;
++                        try {
++                            if (message.type == CryptoChannel.TYPE_PING) {
++                                current.send(CryptoChannel.TYPE_PING, new byte[0]);
++                            } else if (message.type == CryptoChannel.TYPE_CONTROL &&
++                                    message.payload != null && message.payload.length > 0 &&
++                                    message.payload[0] == CryptoChannel.CONTROL_WAKE) {
++                                wakeHost();
++                            }
++                        } catch (Exception e) {
++                            current.reset();
++                        }
++                    }
++
++                    @Override public void onDisconnected() {}
++                });
++        controlLink = link;
++        link.start();
++    }
++
+     private void runSession(CryptoChannel candidate) throws Exception {
+@@ -628,4 +676,7 @@
+         CryptoChannel c = channel;
+         channel = null;
+         if (c != null) c.close();
++        ControlLink ctl = controlLink;
++        controlLink = null;
++        if (ctl != null) ctl.close();
+         RelaySocket rs = relaySocket;
