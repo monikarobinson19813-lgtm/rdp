@@ -1,10 +1,6 @@
 --- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
 +++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-@@ -1,7 +1,14 @@
-             choose.setOnClickListener(v -> {
-                 remoteId.setText(h.remoteId);
-                 friendlyName.setText(h.name);
-                 address.setText(h.localAddress);
+@@ -1,2 +1,9 @@
 -                code.setText("");
 -                status.setText("Selected " + n + ". Enter its 6-digit session PIN.");
 +                String savedPin = ControllerSecretStore.loadPin(this, h.remoteId);
@@ -16,4 +12,3 @@
 +                    code.setText("");
 +                    status.setText("Selected " + n + ". Enter its 6-digit session PIN once to enable one-tap connection.");
 +                }
-             });
