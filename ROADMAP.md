@@ -26,7 +26,7 @@ Primary objective: once a Host has been set up, it should stay reachable and rec
 
 - [x] **4.1 Heartbeat / Host health** — periodic heartbeat, latency, last-seen time. Implementation complete; physical validation deferred to 4.9.
 - [x] **4.2 Connection watchdog** — detect dead/stuck session and force the existing reconnect loop to recover automatically after prolonged loss of Host traffic. Implementation complete; physical validation deferred to 4.9.
-- [ ] **4.3 Video watchdog / stale-frame detection** — distinguish video freeze from connection loss
+- [x] **4.3 Video watchdog / stale-frame detection** — distinguish a stale video stream from a dead Host connection using frame-age tracking while heartbeat remains healthy. Implementation complete; physical validation deferred to 4.9.
 - [ ] **4.4 Reliable foreground Host service** — remain alive during normal background / screen-off usage
 - [ ] **4.5 Automatic Host-service recovery** — recover non-protected Host functions if Android kills the process/service
 - [ ] **4.6 Relay self-recovery** — repeated relay disconnect/reconnect without stale sessions or manual restart
