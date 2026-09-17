@@ -1,0 +1,204 @@
+--- /dev/null
++++ b/app/src/main/java/com/remotephone/direct/ControllerSecretStore.java
+@@ -0,0 +1,72 @@
++package com.remotephone.direct;
++
++import android.content.Context;
++import android.content.SharedPreferences;
++import android.security.keystore.KeyGenParameterSpec;
++import android.security.keystore.KeyProperties;
++import android.util.Base64;
++
++import java.nio.charset.StandardCharsets;
++import java.security.KeyStore;
++
++import javax.crypto.Cipher;
++import javax.crypto.KeyGenerator;
++import javax.crypto.SecretKey;
++import javax.crypto.spec.GCMParameterSpec;
++
++final class ControllerSecretStore {
++    private static final String PREF = "remotephone_controller_secrets";
++    private static final String KEY_ALIAS = "remotephone_controller_pin_key";
++
++    private ControllerSecretStore() {}
++
++    static void savePin(Context context, String remoteId, String pin) {
++        if (context == null || remoteId == null || pin == null || pin.length() != 6) return;
++        try {
++            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
++            cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey());
++            byte[] encrypted = cipher.doFinal(pin.getBytes(StandardCharsets.UTF_8));
++            String packed = Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP) + ":" +
++                    Base64.encodeToString(encrypted, Base64.NO_WRAP);
++            prefs(context).edit().putString("pin_" + remoteId, packed).apply();
++        } catch (Exception ignored) {}
++    }
++
++    static String loadPin(Context context, String remoteId) {
++        if (context == null || remoteId == null) return "";
++        String packed = prefs(context).getString("pin_" + remoteId, "");
++        if (packed == null || packed.isEmpty()) return "";
++        try {
++            String[] parts = packed.split(":", 2);
++            if (parts.length != 2) return "";
++            byte[] iv = Base64.decode(parts[0], Base64.NO_WRAP);
++            byte[] encrypted = Base64.decode(parts[1], Base64.NO_WRAP);
++            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
++            cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), new GCMParameterSpec(128, iv));
++            return new String(cipher.doFinal(encrypted), StandardCharsets.UTF_8);
++        } catch (Exception ignored) {
++            return "";
++        }
++    }
++
++    static void removePin(Context context, String remoteId) {
++        if (context == null || remoteId == null) return;
++        prefs(context).edit().remove("pin_" + remoteId).apply();
++    }
++
++    private static SharedPreferences prefs(Context context) {
++        return context.getSharedPreferences(PREF, Context.MODE_PRIVATE);
++    }
++
++    private static SecretKey getOrCreateKey() throws Exception {
++        KeyStore store = KeyStore.getInstance("AndroidKeyStore");
++        store.load(null);
++        if (store.containsAlias(KEY_ALIAS))
++            return (SecretKey) store.getKey(KEY_ALIAS, null);
++        KeyGenerator generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
++        generator.init(new KeyGenParameterSpec.Builder(KEY_ALIAS,
++                KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
++                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
++                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
++                .build());
++        return generator.generateKey();
++    }
++}
+--- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
++++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
+@@ -1,3 +1,6 @@
+     private volatile ControlLink controlLink;
++    private final java.util.concurrent.ConcurrentHashMap<String, ControlLink> hostStatusLinks = new java.util.concurrent.ConcurrentHashMap<>();
++    private final java.util.concurrent.ConcurrentHashMap<String, String> hostStatusById = new java.util.concurrent.ConcurrentHashMap<>();
++    private volatile long lastHostStatusPingElapsed;
+     private final ExecutorService io = Executors.newSingleThreadExecutor();
+@@ -1,3 +1,4 @@
+         List<MyHosts.HostRecord> all = MyHosts.load(this);
++        ensureHostStatusLinks(all);
+         if (dashboardSummary != null)
+@@ -1,3 +1,4 @@
+             String n = h.name == null || h.name.trim().isEmpty() ? "Host" : h.name.trim();
+-            choose.setText(n + "\n" + formatDeviceId(h.remoteId));
++            choose.setText(n + "\n" + formatDeviceId(h.remoteId) + "\n" + hostStatusById.getOrDefault(h.remoteId, "Offline"));
+             choose.setAllCaps(false);
+@@ -1,4 +1,6 @@
+             remove.setOnClickListener(v -> {
++                stopHostStatusLink(h.remoteId);
++                ControllerSecretStore.removePin(this, h.remoteId);
+                 MyHosts.remove(this, h.remoteId);
+                 refreshHosts();
+@@ -1,4 +1,5 @@
+         saveCurrentHost();
++        stopHostStatusLink(id);
+         manualDisconnect = false;
+         status.setText(localAddress.isEmpty() ? "Finding Host by Remote ID…" : "Connecting to Host locally…");
+@@ -1,4 +1,6 @@
+                 ch = CryptoChannel.connect(socket, pin, expectedFingerprint);
+                 MyHosts.pinFingerprint(this, id, ch.peerFingerprint());
++                ControllerSecretStore.savePin(this, id, pin);
++                runOnUiThread(this::refreshHosts);
+                 resetHealthCounters();
+                 channel = ch;
+@@ -1,4 +1,5 @@
+     private void healthTick() {
+         if (destroyed) return;
++        pingHostStatusLinks();
+         CryptoChannel ch = channel;
+         if (ch == null) return;
+@@ -1,7 +1,9 @@
+     @Override protected void onDestroy() {
+         destroyed = true;
+         manualDisconnect = true;
++        for (ControlLink link : hostStatusLinks.values()) if (link != null) link.close();
++        hostStatusLinks.clear();
+         ControlLink ctl = controlLink;
+         controlLink = null;
+@@ -1,2 +1,72 @@
++    private void ensureHostStatusLinks(List<MyHosts.HostRecord> hosts) {
++        if (destroyed || hosts == null || !RelayConfig.isConfigured()) return;
++        java.util.HashSet<String> wanted = new java.util.HashSet<>();
++        for (MyHosts.HostRecord h : hosts) {
++            if (h == null || h.remoteId == null) continue;
++            wanted.add(h.remoteId);
++            if (hostStatusLinks.containsKey(h.remoteId)) continue;
++            String pin = ControllerSecretStore.loadPin(this, h.remoteId);
++            if (pin.length() != 6) {
++                hostStatusById.put(h.remoteId, "PIN required");
++                continue;
++            }
++            hostStatusById.put(h.remoteId, "Offline");
++            final String id = h.remoteId;
++            ControlLink link = ControlLink.forController(id, pin, h.hostFingerprint,
++                    new ControlLink.Listener() {
++                        @Override public void onConnected(String peerFingerprint) {
++                            MyHosts.pinFingerprint(ViewerActivity.this, id, peerFingerprint);
++                            setSavedHostStatus(id, "Online");
++                        }
++
++                        @Override public void onMessage(CryptoChannel.Message message) {
++                            if (message.type == CryptoChannel.TYPE_STATUS) {
++                                String raw = new String(message.payload, StandardCharsets.UTF_8);
++                                setSavedHostStatus(id, dashboardStatus(raw));
++                            } else if (message.type == CryptoChannel.TYPE_PING) {
++                                String current = hostStatusById.get(id);
++                                if (current == null || current.startsWith("Offline"))
++                                    setSavedHostStatus(id, "Online");
++                            }
++                        }
++
++                        @Override public void onDisconnected() {
++                            setSavedHostStatus(id, "Offline");
++                        }
++                    });
++            ControlLink old = hostStatusLinks.putIfAbsent(id, link);
++            if (old == null) link.start();
++            else link.close();
++        }
++        for (String id : new java.util.ArrayList<>(hostStatusLinks.keySet())) {
++            if (!wanted.contains(id)) stopHostStatusLink(id);
++        }
++    }
++
++    private String dashboardStatus(String raw) {
++        if ("Host sleeping".equals(raw)) return "Sleeping";
++        if ("Host locked".equals(raw)) return "Locked";
++        if ("Host ready".equals(raw)) return "Online";
++        if ("Host needs capture approval".equals(raw)) return "Online — capture approval";
++        return "Online";
++    }
++
++    private void setSavedHostStatus(String id, String value) {
++        hostStatusById.put(id, value);
++        runOnUiThread(this::refreshHosts);
++    }
++
++    private void stopHostStatusLink(String id) {
++        ControlLink link = hostStatusLinks.remove(id);
++        if (link != null) link.close();
++    }
++
++    private void pingHostStatusLinks() {
++        long now = SystemClock.elapsedRealtime();
++        if (now - lastHostStatusPingElapsed < 5000L) return;
++        lastHostStatusPingElapsed = now;
++        for (ControlLink link : hostStatusLinks.values()) {
++            if (link == null || !link.isConnected()) continue;
++            new Thread(() -> {
++                try { link.send(CryptoChannel.TYPE_PING, new byte[0]); }
++                catch (Exception e) { link.reset(); }
++            }, "remotephone-host-status-ping").start();
++        }
++    }
++
+     private static String digits(String s) {
