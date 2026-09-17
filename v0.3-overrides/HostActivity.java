@@ -10,11 +10,12 @@ import android.view.Gravity;
 import android.view.View;
 import android.widget.*;
 import java.util.List;
+import java.util.Locale;
 
 public class HostActivity extends Activity {
     private static final int REQ_CAPTURE = 4401;
     private static final int PORT = 49200;
-    private TextView accessStatus, addressText, codeText, hostStatus, deviceIdText, batteryStatus;
+    private TextView accessStatus, addressText, codeText, hostStatus, deviceIdText, batteryStatus, oemGuidance;
     private EditText friendlyName;
     private String pairingCode;
     private String deviceId;
@@ -55,6 +56,10 @@ public class HostActivity extends Activity {
         Button batterySettings = new Button(this);
         batterySettings.setText("BATTERY / BACKGROUND SETTINGS");
         root.addView(batterySettings);
+
+        oemGuidance = t("", 13);
+        oemGuidance.setPadding(0, 12, 0, 6);
+        root.addView(oemGuidance);
 
         deviceIdText = t("", 22);
         deviceIdText.setPadding(0, 28, 0, 6);
@@ -144,6 +149,7 @@ public class HostActivity extends Activity {
         deviceId = HostConfig.getOrCreateRemoteId(this);
         accessStatus.setText(RemoteAccessibilityService.isReady() ? "✓ Remote control enabled" : "⚠ Remote control not enabled yet");
         refreshBatteryStatus();
+        refreshOemGuidance();
         deviceIdText.setText("Remote ID:  " + formatDeviceId(deviceId));
         codeText.setText("Session PIN:  " + pairingCode);
 
@@ -167,6 +173,26 @@ public class HostActivity extends Activity {
         batteryStatus.setText(unrestricted
                 ? "✓ Android battery optimization: unrestricted"
                 : "⚠ Android may restrict Host background activity");
+    }
+
+    private void refreshOemGuidance() {
+        if (oemGuidance == null) return;
+        String maker = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER.toLowerCase(Locale.US);
+        String message;
+        if (maker.contains("oneplus") || maker.contains("oppo") || maker.contains("realme")) {
+            message = "OEM tip: allow background activity, disable app battery optimization, and enable auto-launch/auto-start if shown by your phone.";
+        } else if (maker.contains("xiaomi") || maker.contains("redmi") || maker.contains("poco")) {
+            message = "OEM tip: set Battery saver to No restrictions and enable Autostart for RemotePhone if available.";
+        } else if (maker.contains("vivo") || maker.contains("iqoo")) {
+            message = "OEM tip: allow high background power usage and enable Autostart for RemotePhone if available.";
+        } else if (maker.contains("samsung")) {
+            message = "OEM tip: exclude RemotePhone from Sleeping/Deep sleeping apps and allow unrestricted battery use.";
+        } else if (maker.contains("huawei") || maker.contains("honor")) {
+            message = "OEM tip: allow manual app launch/background activity and exclude RemotePhone from aggressive power management.";
+        } else {
+            message = "OEM tip: if your phone has Auto-start, Background activity, Sleeping apps, or vendor battery controls, allow RemotePhone there.";
+        }
+        oemGuidance.setText(message);
     }
 
     private void openBatterySettings() {
