@@ -1,0 +1,106 @@
+--- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
++++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
+@@ -39,6 +39,10 @@
+     private volatile long lastFrameElapsed;
+     private volatile String lastHostState = "Host ready";
+     private volatile boolean videoStale;
++    private enum HostUiState {
++        READY, SLEEPING, LOCKED, STREAM_UNAVAILABLE, NEEDS_CAPTURE_APPROVAL, OFFLINE, RECONNECTING
++    }
++    private volatile HostUiState hostUiState = HostUiState.OFFLINE;
+ 
+     @Override public void onCreate(Bundle b) {
+@@ -350,17 +354,20 @@
+                 readSession(ch);
+                 if (manualDisconnect || destroyed) break;
+                 runOnUiThread(() -> {
+-                    remoteStatus.setText("Connection lost — reconnecting…");
++                    hostUiState = HostUiState.RECONNECTING;
++                    remoteStatus.setText("Reconnecting to Host…");
+                     healthStatus.setText("Health: reconnecting…");
+                 });
+             } catch (Exception e) {
+                 if (manualDisconnect || destroyed) break;
+                 String message = safeMessage(e);
+                 if (!everConnected) {
++                    hostUiState = HostUiState.OFFLINE;
+                     runOnUiThread(() -> status.setText("Connection failed: " + message));
+                     break;
+                 }
+                 runOnUiThread(() -> {
+-                    remoteStatus.setText("Reconnecting… " + message);
+-                    healthStatus.setText("Health: reconnecting…");
++                    hostUiState = HostUiState.RECONNECTING;
++                    remoteStatus.setText("Reconnecting to Host…");
++                    healthStatus.setText("Health: reconnecting… " + message);
+                 });
+@@ -400,8 +407,33 @@
+-    private void handleStatus(byte[] p) {
+-        String s = new String(p, StandardCharsets.UTF_8);
+-        lastHostState = s;
+-        if (!"Host ready".equals(s)) videoStale = false;
+-        runOnUiThread(() -> remoteStatus.setText(s));
+-    }
++    private HostUiState stateFromHostStatus(String s) {
++        if ("Host sleeping".equals(s)) return HostUiState.SLEEPING;
++        if ("Host locked".equals(s)) return HostUiState.LOCKED;
++        if ("Host needs capture approval".equals(s)) return HostUiState.NEEDS_CAPTURE_APPROVAL;
++        if ("Host ready".equals(s)) return HostUiState.READY;
++        return HostUiState.STREAM_UNAVAILABLE;
++    }
++
++    private void setHostUiState(HostUiState state) {
++        hostUiState = state;
++        final String text;
++        switch (state) {
++            case READY: text = "Host ready"; break;
++            case SLEEPING: text = "Host sleeping"; break;
++            case LOCKED: text = "Host locked"; break;
++            case STREAM_UNAVAILABLE: text = "Stream unavailable — Host still online"; break;
++            case NEEDS_CAPTURE_APPROVAL: text = "Host needs capture approval"; break;
++            case RECONNECTING: text = "Reconnecting to Host…"; break;
++            default: text = "Host offline"; break;
++        }
++        runOnUiThread(() -> {
++            if (remoteStatus != null) remoteStatus.setText(text);
++        });
++    }
++
++    private void handleStatus(byte[] p) {
++        String s = new String(p, StandardCharsets.UTF_8);
++        lastHostState = s;
++        if (!"Host ready".equals(s)) videoStale = false;
++        setHostUiState(stateFromHostStatus(s));
++    }
+ 
+     private void healthTick() {
+@@ -445,5 +477,6 @@
+             runOnUiThread(() -> {
+                 if (channel == ch) {
+-                    remoteStatus.setText("Host unresponsive — reconnecting…");
++                    hostUiState = HostUiState.RECONNECTING;
++                    remoteStatus.setText("Reconnecting to Host…");
+                     healthStatus.setText("No Host traffic for " + silentSeconds + "s");
+                 }
+@@ -462,4 +495,8 @@
+                 final long frameAgeSeconds = Math.max(1, frameAge / 1000);
+                 runOnUiThread(() -> {
+-                    if (channel == ch) remoteStatus.setText("Video stalled — Host still online (" + frameAgeSeconds + "s)");
++                    if (channel == ch) {
++                        hostUiState = HostUiState.STREAM_UNAVAILABLE;
++                        remoteStatus.setText("Stream unavailable — Host still online");
++                        healthStatus.setText("Video stale for " + frameAgeSeconds + "s");
++                    }
+                 });
+@@ -530,4 +567,5 @@
+                 runOnUiThread(() -> {
+                     screen.setFrame(bmp);
+-                    if (wasStale && channel != null) remoteStatus.setText(lastHostState);
++                    if (wasStale && channel != null)
++                        setHostUiState(stateFromHostStatus(lastHostState));
+                 });
+@@ -590,3 +628,4 @@
+     private void userDisconnect() {
+         manualDisconnect = true;
++        hostUiState = HostUiState.OFFLINE;
+         CryptoChannel c = channel;
