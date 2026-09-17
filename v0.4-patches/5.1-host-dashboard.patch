@@ -13,10 +13,7 @@
 +        dashboardSummary.setPadding(0, 0, 0, 8);
 +        connectPanel.addView(dashboardSummary);
          hostsList = new LinearLayout(this);
-@@ -207,5 +211,7 @@
-     private void refreshHosts() {
-         if (hostsList == null) return;
-         hostsList.removeAllViews();
+@@ -1,2 +1,4 @@
          List<MyHosts.HostRecord> all = MyHosts.load(this);
 +        if (dashboardSummary != null)
 +            dashboardSummary.setText(all.size() + (all.size() == 1 ? " Host saved" : " Hosts saved"));
