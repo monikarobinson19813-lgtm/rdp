@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/app/src/main/java/com/remotephone/direct/ControllerSecretStore.java
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,74 @@
 +package com.remotephone.direct;
 +
 +import android.content.Context;
