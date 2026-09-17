@@ -12,10 +12,10 @@
 +        }
 --- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
 +++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-@@ -1,2 +1,2 @@
+@@ -1,1 +1,1 @@
 -            dashboardSummary.setText(all.size() + (all.size() == 1 ? " Host saved" : " Hosts saved"));
 +            dashboardSummary.setText(all.size() + " / " + MyHosts.MAX_HOSTS + " Hosts saved");
-@@ -1,2 +1,7 @@
+@@ -1,2 +1,6 @@
          String a = address.getText().toString().trim();
 +        if (MyHosts.find(this, id) == null && MyHosts.load(this).size() >= MyHosts.MAX_HOSTS) {
 +            status.setText("My Hosts is full — maximum " + MyHosts.MAX_HOSTS + " Hosts");
