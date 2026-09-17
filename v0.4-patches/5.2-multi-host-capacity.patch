@@ -1,0 +1,24 @@
+--- a/app/src/main/java/com/remotephone/direct/MyHosts.java
++++ b/app/src/main/java/com/remotephone/direct/MyHosts.java
+@@ -11,2 +11,3 @@
+     private static final String KEY = "hosts_json";
++    public static final int MAX_HOSTS = 10;
+ 
+@@ -66,1 +67,4 @@
+-        if (!found) all.add(rec);
++        if (!found) {
++            if (all.size() >= MAX_HOSTS) return;
++            all.add(rec);
++        }
+--- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
++++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
+@@ -1,2 +1,2 @@
+-            dashboardSummary.setText(all.size() + (all.size() == 1 ? " Host saved" : " Hosts saved"));
++            dashboardSummary.setText(all.size() + " / " + MyHosts.MAX_HOSTS + " Hosts saved");
+@@ -1,2 +1,7 @@
+         String a = address.getText().toString().trim();
++        if (MyHosts.find(this, id) == null && MyHosts.load(this).size() >= MyHosts.MAX_HOSTS) {
++            status.setText("My Hosts is full — maximum " + MyHosts.MAX_HOSTS + " Hosts");
++            return;
++        }
+         MyHosts.upsert(this, new MyHosts.HostRecord(id, n, a));
