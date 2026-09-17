@@ -2,6 +2,8 @@
 
 This file is the source of truth for the project roadmap and release checklist.
 
+Implementation checkboxes mean the code/build work is complete. Physical-device validation is intentionally batched into **4.9 Unattended stress testing** unless a build itself fails.
+
 ## v0.3 — Remote control becomes usable
 
 Status: ✅ Completed / baseline established
@@ -22,8 +24,8 @@ Primary objective: once a Host has been set up, it should stay reachable and rec
 
 ### v0.4 Core — must finish before v0.4 is complete
 
-- [ ] **4.1 Heartbeat / Host health** — periodic heartbeat, latency, last-seen time
-- [ ] **4.2 Connection watchdog** — detect dead/stuck session and recover automatically
+- [x] **4.1 Heartbeat / Host health** — periodic heartbeat, latency, last-seen time. Implementation complete; physical validation deferred to 4.9.
+- [x] **4.2 Connection watchdog** — detect dead/stuck session and force the existing reconnect loop to recover automatically after prolonged loss of Host traffic. Implementation complete; physical validation deferred to 4.9.
 - [ ] **4.3 Video watchdog / stale-frame detection** — distinguish video freeze from connection loss
 - [ ] **4.4 Reliable foreground Host service** — remain alive during normal background / screen-off usage
 - [ ] **4.5 Automatic Host-service recovery** — recover non-protected Host functions if Android kills the process/service
