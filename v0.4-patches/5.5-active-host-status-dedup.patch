@@ -1,0 +1,23 @@
+--- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
++++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
+@@ -32,1 +32,2 @@
+     private volatile long lastHostStatusPingElapsed;
++    private volatile String activeControlHostId = "";
+@@ -321,2 +322,3 @@
+         stopHostStatusLink(id);
++        activeControlHostId = id;
+         manualDisconnect = false;
+@@ -360,3 +362,3 @@
+                 MyHosts.pinFingerprint(this, id, ch.peerFingerprint());
+                 ControllerSecretStore.savePin(this, id, pin);
+-                runOnUiThread(this::refreshHosts);
++                setSavedHostStatus(id, "Online");
+@@ -693,2 +695,3 @@
+         stopAudioPlayback();
++        activeControlHostId = "";
+         leaveViewerUi();
+@@ -748,2 +751,3 @@
+             if (h == null || h.remoteId == null) continue;
+             wanted.add(h.remoteId);
++            if (h.remoteId.equals(activeControlHostId)) continue;
+             if (hostStatusLinks.containsKey(h.remoteId)) continue;
