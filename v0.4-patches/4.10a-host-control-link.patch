@@ -1,9 +1,7 @@
 --- a/app/src/main/java/com/remotephone/direct/HostService.java
 +++ b/app/src/main/java/com/remotephone/direct/HostService.java
-@@ -49,3 +49,4 @@
-     private ExecutorService acceptExecutor, relayExecutor, encodeExecutor, audioExecutor;
+@@ -50,1 +50,2 @@
      private final AtomicBoolean relayLoopActive = new AtomicBoolean(false);
-     private final AtomicBoolean encodeBusy = new AtomicBoolean(false);
 +    private volatile ControlLink controlLink;
 --- a/app/src/main/java/com/remotephone/direct/HostService.java
 +++ b/app/src/main/java/com/remotephone/direct/HostService.java
