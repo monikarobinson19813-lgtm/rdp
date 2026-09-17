@@ -1,0 +1,13 @@
+--- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
++++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
+@@ -1,4 +1,9 @@
+                 runOnUiThread(() -> {
+                     screen.setFrame(bmp);
+-                    if (wasStale && channel != null)
++                    if (hostUiState == HostUiState.NEEDS_CAPTURE_APPROVAL && channel != null) {
++                        lastHostState = "Host ready";
++                        setHostUiState(HostUiState.READY);
++                    } else if (wasStale && channel != null) {
+                         setHostUiState(stateFromHostStatus(lastHostState));
++                    }
+                 });
