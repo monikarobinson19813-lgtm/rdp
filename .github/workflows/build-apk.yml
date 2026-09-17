@@ -5,9 +5,6 @@ on:
     branches: [ main, v0.2, v0.3, v0.3.1, v0.3.2, v0.3.3, v0.4 ]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -23,7 +20,7 @@ jobs:
           unzip -o remotephone-project-fixed.zip
 
       - name: Apply v0.2 Android overrides
-        if: github.ref == 'refs/heads/v0.2' || github.ref == 'refs/heads/v0.3' || github.ref == 'refs/heads/v0.3.1' || github.ref == 'refs/heads/v0.3.2' || github.ref == 'refs/heads/v0.3.3' || github.ref == 'refs/heads/v0.4'
+        if: github.ref == 'refs/heads/v0.2' || github.ref == 'refs/heads/v0.3' || github.ref == 'refs/heads/v0.3.1' || github.ref == 'refs/heads/v0.3.2' || github.ref == 'refs/heads/v0.3.3'
         shell: bash
         run: |
           cp v0.2-overrides/RemoteScreenView.java app/src/main/java/com/remotephone/direct/RemoteScreenView.java
@@ -31,7 +28,7 @@ jobs:
           cp v0.2-overrides/HostActivity.java app/src/main/java/com/remotephone/direct/HostActivity.java
 
       - name: Apply v0.3 Android overrides
-        if: github.ref == 'refs/heads/v0.3' || github.ref == 'refs/heads/v0.3.1' || github.ref == 'refs/heads/v0.3.2' || github.ref == 'refs/heads/v0.3.3' || github.ref == 'refs/heads/v0.4'
+        if: github.ref == 'refs/heads/v0.3' || github.ref == 'refs/heads/v0.3.1' || github.ref == 'refs/heads/v0.3.2' || github.ref == 'refs/heads/v0.3.3'
         shell: bash
         run: |
           if [ -d v0.3-overrides ]; then
@@ -48,30 +45,13 @@ jobs:
           }
           EOF
 
-      - name: Apply v0.4 modular patches
+      - name: Use consolidated v0.5 Android baseline
         if: github.ref == 'refs/heads/v0.4'
         shell: bash
         run: |
-          if [ -d v0.4-patches ]; then
-            for patch_file in $(find v0.4-patches -maxdepth 1 -type f -name '*.patch' | sort -V); do
-              echo "Applying ${patch_file}"
-              patch --batch --forward -p1 < "${patch_file}"
-            done
-          fi
-
-      - name: Snapshot green v0.5 Android baseline
-        if: github.ref == 'refs/heads/v0.4'
-        shell: bash
-        run: |
-          if [ ! -d v0.5-baseline/app ]; then
-            mkdir -p v0.5-baseline
-            cp -a app v0.5-baseline/
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add v0.5-baseline/app
-            git commit -m "build: snapshot green v0.5 Android baseline"
-            git push origin HEAD:v0.4
-          fi
+          test -d v0.5-baseline/app
+          rm -rf app
+          cp -a v0.5-baseline/app app
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
