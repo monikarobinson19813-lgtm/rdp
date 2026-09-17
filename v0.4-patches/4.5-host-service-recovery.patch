@@ -1,0 +1,91 @@
+--- a/app/src/main/java/com/remotephone/direct/HostService.java
++++ b/app/src/main/java/com/remotephone/direct/HostService.java
+@@ -38,4 +38,6 @@
+     private volatile String remoteId;
+     private KeyPair hostIdentity;
++    private static final String RECOVERY_PREF = "remotephone_host_recovery";
++    private static final String KEY_DESIRED_RUNNING = "desired_running";
+ 
+     private ExecutorService acceptExecutor, relayExecutor, encodeExecutor, audioExecutor;
+@@ -58,5 +60,6 @@
+     @Override public int onStartCommand(Intent intent, int flags, int startId) {
+         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
++            setHostDesiredRunning(false);
+             stopSelf();
+             return START_NOT_STICKY;
+         }
+@@ -66,9 +69,12 @@
+             return START_STICKY;
+         }
+         if (intent == null) {
+-            postNeedsApprovalNotification();
+-            stopSelf();
+-            return START_NOT_STICKY;
++            if (!isHostDesiredRunning()) {
++                stopSelf();
++                return START_NOT_STICKY;
++            }
++            recoverWithoutProjection();
++            return running ? START_STICKY : START_NOT_STICKY;
+         }
+ 
+         pairingCode = intent.getStringExtra(EXTRA_CODE);
+@@ -89,6 +95,7 @@
+             return START_NOT_STICKY;
+         }
+ 
++        setHostDesiredRunning(true);
+         ensureForegroundState();
+ 
+         running = true;
+@@ -103,4 +110,36 @@
+         return START_STICKY;
+     }
+ 
++    private boolean isHostDesiredRunning() {
++        return getSharedPreferences(RECOVERY_PREF, MODE_PRIVATE)
++                .getBoolean(KEY_DESIRED_RUNNING, false);
++    }
++
++    private void setHostDesiredRunning(boolean desired) {
++        getSharedPreferences(RECOVERY_PREF, MODE_PRIVATE)
++                .edit()
++                .putBoolean(KEY_DESIRED_RUNNING, desired)
++                .apply();
++    }
++
++    private void recoverWithoutProjection() {
++        pairingCode = HostConfig.getOrCreateSessionPin(this);
++        remoteId = HostConfig.getOrCreateRemoteId(this);
++        try {
++            hostIdentity = HostIdentity.getOrCreate();
++        } catch (Exception e) {
++            postNeedsApprovalNotification();
++            stopSelf();
++            return;
++        }
++
++        running = true;
++        ensureForegroundState();
++        acquireCpuWakeLock();
++        registerScreenStateReceiver();
++        startLocalServer();
++        if (RelayConfig.isConfigured()) startRelayLoop();
++        postNeedsApprovalNotification();
++    }
++
+     private void ensureForegroundState() {
+@@ -119,5 +158,7 @@
+             String text;
+-            if (remoteId != null && remoteId.length() == 9 && RelayConfig.isConfigured())
++            if (running && projection == null)
++                text = "Host recovered; screen capture approval required";
++            else if (remoteId != null && remoteId.length() == 9 && RelayConfig.isConfigured())
+                 text = "Internet Remote ID: " + formatRemoteId(remoteId);
+             else if (RelayConfig.isConfigured())
+                 text = "Host service active";
+@@ -171,3 +212,4 @@
+     private String hostState() {
++        if (projection == null) return "Host needs capture approval";
+         try {
+             PowerManager pm = (PowerManager)getSystemService(POWER_SERVICE);
