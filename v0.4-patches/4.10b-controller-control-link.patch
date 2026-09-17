@@ -7,260 +7,33 @@
      private final ExecutorService io = Executors.newSingleThreadExecutor();
 --- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
 +++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-@@ -1,3 +1,5 @@
-     private volatile boolean destroyed;
-     private volatile long lastSeenElapsed;
-+    private volatile long lastMainSeenElapsed;
-+    private volatile long lastControlSeenElapsed;
-     private volatile long lastPingAttemptElapsed;
---- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-+++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-@@ -1,7 +1,50 @@
+@@ -1,5 +1,27 @@
          saveCurrentHost();
          manualDisconnect = false;
          status.setText(localAddress.isEmpty() ? "Finding Host by Remote ID…" : "Connecting to Host locally…");
-+        if (localAddress.isEmpty()) startControlLink(id, pin);
-         io.execute(() -> connectionLoop(id, pin, localAddress));
-     }
- 
-+    private synchronized void startControlLink(String id, String pin) {
-+        stopControlLink();
-+        MyHosts.HostRecord saved = MyHosts.find(this, id);
-+        String expectedFingerprint = saved == null ? "" : saved.hostFingerprint;
-+        ControlLink link = ControlLink.forController(id, pin, expectedFingerprint,
-+                new ControlLink.Listener() {
-+                    @Override public void onConnected(String peerFingerprint) {
-+                        MyHosts.pinFingerprint(ViewerActivity.this, id, peerFingerprint);
-+                        long now = SystemClock.elapsedRealtime();
-+                        lastControlSeenElapsed = now;
-+                        lastSeenElapsed = now;
-+                    }
-+
-+                    @Override public void onMessage(CryptoChannel.Message message) {
-+                        long now = SystemClock.elapsedRealtime();
-+                        lastControlSeenElapsed = now;
-+                        lastSeenElapsed = now;
-+                        if (message.type == CryptoChannel.TYPE_STATUS) {
-+                            handleStatus(message.payload);
-+                        } else if (message.type == CryptoChannel.TYPE_PING) {
-+                            recordHeartbeat(true);
++        if (localAddress.isEmpty()) {
++            MyHosts.HostRecord savedControlHost = MyHosts.find(this, id);
++            String expectedControlFingerprint = savedControlHost == null ? "" : savedControlHost.hostFingerprint;
++            ControlLink ctl = ControlLink.forController(id, pin, expectedControlFingerprint,
++                    new ControlLink.Listener() {
++                        @Override public void onConnected(String peerFingerprint) {
++                            MyHosts.pinFingerprint(ViewerActivity.this, id, peerFingerprint);
 +                        }
-+                    }
 +
-+                    @Override public void onDisconnected() {}
-+                });
-+        controlLink = link;
-+        link.start();
-+    }
++                        @Override public void onMessage(CryptoChannel.Message message) {
++                            if (message.type == CryptoChannel.TYPE_STATUS) {
++                                handleStatus(message.payload);
++                            } else if (message.type == CryptoChannel.TYPE_PING) {
++                                handleHeartbeatResponse();
++                            }
++                        }
 +
-+    private boolean isControlConnected() {
-+        ControlLink ctl = controlLink;
-+        return ctl != null && ctl.isConnected();
-+    }
-+
-+    private synchronized void stopControlLink() {
-+        ControlLink ctl = controlLink;
-+        controlLink = null;
-+        if (ctl != null) ctl.close();
-+        lastControlSeenElapsed = 0;
-+    }
-+
-     private void connectionLoop(String id, String pin, String localAddress) {
---- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-+++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-@@ -1,7 +1,12 @@
-                 readSession(ch);
-                 if (manualDisconnect || destroyed) break;
--                runOnUiThread(() -> {
--                    hostUiState = HostUiState.RECONNECTING;
--                    remoteStatus.setText("Reconnecting to Host…");
--                    healthStatus.setText("Health: reconnecting…");
--                });
-+                if (isControlConnected()) {
-+                    setHostUiState(HostUiState.STREAM_UNAVAILABLE);
-+                    runOnUiThread(() -> healthStatus.setText("Control link alive • video reconnecting…"));
-+                } else {
-+                    runOnUiThread(() -> {
-+                        hostUiState = HostUiState.RECONNECTING;
-+                        remoteStatus.setText("Reconnecting to Host…");
-+                        healthStatus.setText("Health: reconnecting…");
++                        @Override public void onDisconnected() {}
 +                    });
-+                }
---- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-+++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-@@ -1,10 +1,16 @@
-                 if (!everConnected) {
-                     hostUiState = HostUiState.OFFLINE;
-+                    stopControlLink();
-                     runOnUiThread(() -> status.setText("Connection failed: " + message));
-                     break;
-                 }
--                runOnUiThread(() -> {
--                    hostUiState = HostUiState.RECONNECTING;
--                    remoteStatus.setText("Reconnecting to Host…");
--                    healthStatus.setText("Health: reconnecting… " + message);
--                });
-+                if (isControlConnected()) {
-+                    setHostUiState(HostUiState.STREAM_UNAVAILABLE);
-+                    runOnUiThread(() -> healthStatus.setText("Control link alive • video reconnecting…"));
-+                } else {
-+                    runOnUiThread(() -> {
-+                        hostUiState = HostUiState.RECONNECTING;
-+                        remoteStatus.setText("Reconnecting to Host…");
-+                        healthStatus.setText("Health: reconnecting… " + message);
-+                    });
-+                }
---- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-+++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-@@ -1,8 +1,10 @@
-         while (!manualDisconnect && !destroyed && channel == ch) {
-             CryptoChannel.Message m = ch.read();
--            lastSeenElapsed = SystemClock.elapsedRealtime();
-+            long now = SystemClock.elapsedRealtime();
-+            lastMainSeenElapsed = now;
-+            lastSeenElapsed = now;
-             if (m.type == CryptoChannel.TYPE_FRAME) handleFrame(m.payload);
-             else if (m.type == CryptoChannel.TYPE_AUDIO) handleAudio(m.payload);
-             else if (m.type == CryptoChannel.TYPE_STATUS) handleStatus(m.payload);
--            else if (m.type == CryptoChannel.TYPE_PING) handleHeartbeatResponse();
-+            else if (m.type == CryptoChannel.TYPE_PING) recordHeartbeat(false);
-         }
---- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-+++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-@@ -1,30 +1,48 @@
-     private void healthTick() {
-         if (destroyed) return;
--        CryptoChannel ch = channel;
--        if (ch == null) return;
-+        CryptoChannel main = channel;
-+        ControlLink ctl = controlLink;
-+        boolean controlAlive = ctl != null && ctl.isConnected();
-+        if (main == null && !controlAlive) return;
-+
-         long now = SystemClock.elapsedRealtime();
--        long silentFor = lastSeenElapsed > 0 ? now - lastSeenElapsed : 0;
--        if (lastSeenElapsed > 0 && silentFor >= CONNECTION_WATCHDOG_MS) {
--            final long silentSeconds = Math.max(1, silentFor / 1000);
--            runOnUiThread(() -> {
--                if (channel == ch) {
--                    hostUiState = HostUiState.RECONNECTING;
--                    remoteStatus.setText("Reconnecting to Host…");
--                    healthStatus.setText("No Host traffic for " + silentSeconds + "s");
--                }
--            });
--            if (channel == ch) ch.close();
--            return;
-+
-+        boolean streamExpected = "Host ready".equals(lastHostState);
-+        long mainSilentFor = lastMainSeenElapsed > 0 ? now - lastMainSeenElapsed : 0;
-+        if (main != null && streamExpected && lastMainSeenElapsed > 0 &&
-+                mainSilentFor >= CONNECTION_WATCHDOG_MS) {
-+            final long silentSeconds = Math.max(1, mainSilentFor / 1000);
-+            if (controlAlive) {
-+                setHostUiState(HostUiState.STREAM_UNAVAILABLE);
-+                runOnUiThread(() -> healthStatus.setText(
-+                        "Control link alive • video silent " + silentSeconds + "s"));
-+            } else {
-+                runOnUiThread(() -> {
-+                    if (channel == main) {
-+                        hostUiState = HostUiState.RECONNECTING;
-+                        remoteStatus.setText("Reconnecting to Host…");
-+                        healthStatus.setText("No Host traffic for " + silentSeconds + "s");
-+                    }
-+                });
-+            }
-+            if (channel == main) main.close();
-         }
-+
-+        long controlSilentFor = lastControlSeenElapsed > 0 ? now - lastControlSeenElapsed : 0;
-+        if (controlAlive && lastControlSeenElapsed > 0 &&
-+                controlSilentFor >= CONNECTION_WATCHDOG_MS) {
-+            ctl.reset();
-+            controlAlive = false;
++            controlLink = ctl;
++            ctl.start();
 +        }
-+
-         long frameAge = lastFrameElapsed > 0 ? now - lastFrameElapsed : 0;
-         boolean hostAlive = lastSeenElapsed > 0 && now - lastSeenElapsed < VIDEO_STALE_MS;
--        boolean streamExpected = "Host ready".equals(lastHostState);
-         if (hostAlive && streamExpected && lastFrameElapsed > 0 && frameAge >= VIDEO_STALE_MS) {
-             if (!videoStale) {
-                 videoStale = true;
-                 final long frameAgeSeconds = Math.max(1, frameAge / 1000);
-                 runOnUiThread(() -> {
--                    if (channel == ch) {
-+                    if (channel == main || isControlConnected()) {
-                         hostUiState = HostUiState.STREAM_UNAVAILABLE;
-                         remoteStatus.setText("Stream unavailable — Host still online");
-                         healthStatus.setText("Video stale for " + frameAgeSeconds + "s");
-@@ -34,17 +52,21 @@
-         } else if (!streamExpected) {
-             videoStale = false;
-         }
-+
-+        boolean useControl = ctl != null && ctl.isConnected();
-         if (now - lastPingAttemptElapsed >= 3000 &&
-                 (!pingOutstanding || now - lastPingSentElapsed >= 6000)) {
-             lastPingAttemptElapsed = now;
-             lastPingSentElapsed = now;
-             pingOutstanding = true;
-             try {
--                ch.send(CryptoChannel.TYPE_PING, new byte[0]);
-+                if (useControl) ctl.send(CryptoChannel.TYPE_PING, new byte[0]);
-+                else if (main != null) main.send(CryptoChannel.TYPE_PING, new byte[0]);
-             } catch (Exception e) {
--                if (channel == ch) ch.close();
-+                if (useControl) ctl.reset();
-+                else if (main != null && channel == main) main.close();
-                 return;
-             }
-         }
--        refreshHealthUi(ch);
-+        refreshHealthUi();
-     }
---- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-+++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-@@ -1,10 +1,11 @@
--    private void handleHeartbeatResponse() {
-+    private void recordHeartbeat(boolean fromControl) {
-         long now = SystemClock.elapsedRealtime();
-         lastSeenElapsed = now;
-+        if (fromControl) lastControlSeenElapsed = now;
-+        else lastMainSeenElapsed = now;
-         if (pingOutstanding && lastPingSentElapsed > 0) {
-             latencyMs = Math.max(0, now - lastPingSentElapsed);
-             pingOutstanding = false;
-         }
--        CryptoChannel ch = channel;
--        if (ch != null) refreshHealthUi(ch);
-+        refreshHealthUi();
-     }
---- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-+++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-@@ -1,4 +1,6 @@
-         lastSeenElapsed = now;
-+        lastMainSeenElapsed = now;
-+        lastControlSeenElapsed = isControlConnected() ? now : 0;
-         lastPingAttemptElapsed = 0;
-         lastPingSentElapsed = 0;
-         latencyMs = -1;
---- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-+++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-@@ -1,5 +1,5 @@
--    private void refreshHealthUi(CryptoChannel expectedChannel) {
--        if (expectedChannel == null || healthStatus == null) return;
-+    private void refreshHealthUi() {
-+        if (healthStatus == null) return;
-         long now = SystemClock.elapsedRealtime();
-         long seenAgeSeconds = lastSeenElapsed > 0 ? Math.max(0, (now - lastSeenElapsed) / 1000) : -1;
-         String pingText = latencyMs >= 0 ? "Ping " + latencyMs + " ms" : "Ping measuring…";
-@@ -15,7 +15,7 @@
-         }
-         final String healthText = pingText + "  •  " + seenText + frameText;
-         runOnUiThread(() -> {
--            if (channel == expectedChannel && healthStatus != null)
-+            if ((channel != null || isControlConnected()) && healthStatus != null)
-                 healthStatus.setText(healthText);
-         });
+         io.execute(() -> connectionLoop(id, pin, localAddress));
      }
 --- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
 +++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
@@ -281,17 +54,21 @@
          ioSend(() -> ch.send(CryptoChannel.TYPE_CONTROL, new byte[]{action}));
 --- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
 +++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-@@ -1,4 +1,5 @@
+@@ -1,4 +1,7 @@
      private void userDisconnect() {
          manualDisconnect = true;
          hostUiState = HostUiState.OFFLINE;
-+        stopControlLink();
++        ControlLink ctl = controlLink;
++        controlLink = null;
++        if (ctl != null) ctl.close();
          CryptoChannel c = channel;
 --- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
 +++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-@@ -1,4 +1,5 @@
+@@ -1,4 +1,7 @@
      @Override protected void onDestroy() {
          destroyed = true;
          manualDisconnect = true;
-+        stopControlLink();
++        ControlLink ctl = controlLink;
++        controlLink = null;
++        if (ctl != null) ctl.close();
          CryptoChannel c = channel;
