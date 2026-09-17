@@ -25,6 +25,7 @@ public class ViewerActivity extends Activity {
     private TextView status, remoteStatus, healthStatus;
     private TextView dashboardSummary;
     private RemoteScreenView screen;
+    private WakeManager wakeManager;
     private volatile CryptoChannel channel;
     private volatile ControlLink controlLink;
     private final java.util.concurrent.ConcurrentHashMap<String, ControlLink> hostStatusLinks = new java.util.concurrent.ConcurrentHashMap<>();
@@ -176,6 +177,12 @@ public class ViewerActivity extends Activity {
         root.addView(remotePanel, new LinearLayout.LayoutParams(-1, -1));
         setContentView(root);
 
+        wakeManager = new WakeManager(
+                () -> sendControl(CryptoChannel.CONTROL_WAKE),
+                message -> {
+                    if (remoteStatus != null) remoteStatus.setText(message);
+                });
+
         saveHost.setOnClickListener(v -> saveCurrentHost());
         advanced.setOnClickListener(v -> {
             boolean show = address.getVisibility() != View.VISIBLE;
@@ -187,10 +194,7 @@ public class ViewerActivity extends Activity {
         back.setOnClickListener(v -> sendNav(CryptoChannel.NAV_BACK));
         home.setOnClickListener(v -> sendNav(CryptoChannel.NAV_HOME));
         recent.setOnClickListener(v -> sendNav(CryptoChannel.NAV_RECENTS));
-        wake.setOnClickListener(v -> {
-            remoteStatus.setText("Waking Host…");
-            sendControl(CryptoChannel.CONTROL_WAKE);
-        });
+        wake.setOnClickListener(v -> wakeManager.requestWake());
         audio.setOnClickListener(v -> {
             audioOn = !audioOn;
             audio.setText(audioOn ? "AUDIO ON" : "AUDIO OFF");
@@ -468,6 +472,8 @@ public class ViewerActivity extends Activity {
     private void handleStatus(byte[] p) {
         String s = new String(p, StandardCharsets.UTF_8);
         lastHostState = s;
+        WakeManager wake = wakeManager;
+        if (wake != null) wake.onHostStatus(s);
         if (!"Host ready".equals(s)) videoStale = false;
         setHostUiState(stateFromHostStatus(s));
     }
@@ -684,6 +690,7 @@ public class ViewerActivity extends Activity {
     private interface Throwing { void run() throws Exception; }
 
     private void userDisconnect() {
+        if (wakeManager != null) wakeManager.cancel();
         manualDisconnect = true;
         hostUiState = HostUiState.OFFLINE;
         ControlLink ctl = controlLink;
@@ -701,6 +708,7 @@ public class ViewerActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        if (wakeManager != null) wakeManager.cancel();
         destroyed = true;
         manualDisconnect = true;
         for (ControlLink link : hostStatusLinks.values()) if (link != null) link.close();
