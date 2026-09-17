@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">RemotePhone Direct</string>
+    <string name="accessibility_service_description">Allows RemotePhone Direct to send touch gestures and Home/Back/Recents commands to this phone while you are hosting a remote session.</string>
+</resources>
