@@ -5,6 +5,9 @@ on:
     branches: [ main, v0.2, v0.3, v0.3.1, v0.3.2, v0.3.3, v0.4 ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -45,6 +48,50 @@ jobs:
           }
           EOF
 
+      - name: Wire v0.6 wake manager into clean baseline
+        if: github.ref == 'refs/heads/v0.4'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('v0.5-baseline/app/src/main/java/com/remotephone/direct/ViewerActivity.java')
+          s = p.read_text()
+          marker = 'private WakeManager wakeManager;'
+          if marker not in s:
+              replacements = [
+                  (
+                      '    private RemoteScreenView screen;\n',
+                      '    private RemoteScreenView screen;\n    private WakeManager wakeManager;\n'
+                  ),
+                  (
+                      '        setContentView(root);\n\n        saveHost.setOnClickListener(v -> saveCurrentHost());',
+                      '        setContentView(root);\n\n        wakeManager = new WakeManager(\n                () -> sendControl(CryptoChannel.CONTROL_WAKE),\n                message -> {\n                    if (remoteStatus != null) remoteStatus.setText(message);\n                });\n\n        saveHost.setOnClickListener(v -> saveCurrentHost());'
+                  ),
+                  (
+                      '        wake.setOnClickListener(v -> {\n            remoteStatus.setText("Waking Host…");\n            sendControl(CryptoChannel.CONTROL_WAKE);\n        });',
+                      '        wake.setOnClickListener(v -> wakeManager.requestWake());'
+                  ),
+                  (
+                      '        lastHostState = s;\n        if (!"Host ready".equals(s)) videoStale = false;',
+                      '        lastHostState = s;\n        WakeManager wake = wakeManager;\n        if (wake != null) wake.onHostStatus(s);\n        if (!"Host ready".equals(s)) videoStale = false;'
+                  ),
+                  (
+                      '    private void userDisconnect() {\n        manualDisconnect = true;',
+                      '    private void userDisconnect() {\n        if (wakeManager != null) wakeManager.cancel();\n        manualDisconnect = true;'
+                  ),
+                  (
+                      '    @Override protected void onDestroy() {\n        destroyed = true;',
+                      '    @Override protected void onDestroy() {\n        if (wakeManager != null) wakeManager.cancel();\n        destroyed = true;'
+                  ),
+              ]
+              for old, new in replacements:
+                  count = s.count(old)
+                  if count != 1:
+                      raise SystemExit(f'Expected exactly one wake wiring anchor, found {count}: {old[:80]!r}')
+                  s = s.replace(old, new, 1)
+              p.write_text(s)
+          PY
+
       - name: Use consolidated v0.5 Android baseline
         if: github.ref == 'refs/heads/v0.4'
         shell: bash
@@ -66,6 +113,18 @@ jobs:
 
       - name: Build debug APK and AAB
         run: gradle :app:assembleDebug :app:bundleDebug --stacktrace
+
+      - name: Commit validated v0.6 wake wiring
+        if: github.ref == 'refs/heads/v0.4'
+        shell: bash
+        run: |
+          if ! git diff --quiet -- v0.5-baseline/app/src/main/java/com/remotephone/direct/ViewerActivity.java; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add v0.5-baseline/app/src/main/java/com/remotephone/direct/ViewerActivity.java
+            git commit -m "v0.6: wire validated wake manager into Controller"
+            git push origin HEAD:v0.4
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
