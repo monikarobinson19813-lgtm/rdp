@@ -118,6 +118,14 @@ public final class RelaySocket extends Socket {
         return new RelaySocket(RelayConfig.webSocketUrl(remoteId), "host", hostToken);
     }
 
+    public static RelaySocket connectControllerControl(String remoteId) throws IOException {
+        return new RelaySocket(RelayConfig.webSocketUrl(remoteId), "controller-control", null);
+    }
+
+    public static RelaySocket connectHostControl(String remoteId, String hostToken) throws IOException {
+        return new RelaySocket(RelayConfig.webSocketUrl(remoteId), "host-control", hostToken);
+    }
+
     @Override public InputStream getInputStream() throws IOException {
         if (closed.get()) throw new SocketException("Relay socket closed");
         return input;
