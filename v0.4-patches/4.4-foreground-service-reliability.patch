@@ -1,0 +1,110 @@
+--- a/app/src/main/java/com/remotephone/direct/HostService.java
++++ b/app/src/main/java/com/remotephone/direct/HostService.java
+@@ -48,7 +48,12 @@ public class HostService extends Service {
+     public static boolean isRunning() { return running; }
+     @Override public IBinder onBind(Intent i) { return null; }
+ 
++    @Override public void onCreate() {
++        super.onCreate();
++        createNotificationChannel();
++    }
++
+     @Override public int onStartCommand(Intent intent, int flags, int startId) {
+         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+             stopSelf();
+             return START_NOT_STICKY;
+         }
+-        if (running) return START_STICKY;
++        if (running) {
++            ensureForegroundState();
++            acquireCpuWakeLock();
++            return START_STICKY;
++        }
+         if (intent == null) {
+             postNeedsApprovalNotification();
+             stopSelf();
+@@ -79,13 +84,7 @@ public class HostService extends Service {
+             return START_NOT_STICKY;
+         }
+ 
+-        createNotificationChannel();
+-        startForeground(NOTIF, new Notification.Builder(this, "remotephone_host")
+-                .setContentTitle("RemotePhone Host is ready")
+-                .setContentText(RelayConfig.isConfigured() ? "Internet Remote ID: " + formatRemoteId(remoteId) : "Local testing ready; internet relay not configured")
+-                .setSmallIcon(android.R.drawable.stat_sys_upload)
+-                .setOngoing(true).build());
++        ensureForegroundState();
+ 
+         running = true;
+         acquireCpuWakeLock();
+@@ -101,6 +100,33 @@ public class HostService extends Service {
+         return START_STICKY;
+     }
+ 
++    private void ensureForegroundState() {
++        try {
++            createNotificationChannel();
++            Intent open = new Intent(this, HostActivity.class);
++            PendingIntent pi = PendingIntent.getActivity(this, 102, open,
++                    PendingIntent.FLAG_UPDATE_CURRENT |
++                            (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0));
++            String text;
++            if (remoteId != null && remoteId.length() == 9 && RelayConfig.isConfigured())
++                text = "Internet Remote ID: " + formatRemoteId(remoteId);
++            else if (RelayConfig.isConfigured())
++                text = "Host service active";
++            else
++                text = "Local testing ready; internet relay not configured";
++            Notification.Builder b = Build.VERSION.SDK_INT >= 26
++                    ? new Notification.Builder(this, "remotephone_host")
++                    : new Notification.Builder(this);
++            b.setContentTitle("RemotePhone Host is ready")
++                    .setContentText(text)
++                    .setSmallIcon(android.R.drawable.stat_sys_upload)
++                    .setContentIntent(pi)
++                    .setOngoing(true)
++                    .setOnlyAlertOnce(true);
++            startForeground(NOTIF, b.build());
++        } catch (Exception ignored) {}
++    }
++
+     private void createNotificationChannel() {
+         if (Build.VERSION.SDK_INT >= 26) {
+             NotificationManager n = (NotificationManager)getSystemService(NOTIFICATION_SERVICE);
+@@ -136,6 +162,8 @@ public class HostService extends Service {
+ 
+     private void acquireCpuWakeLock() {
+         try {
++            if (cpuWakeLock != null && cpuWakeLock.isHeld()) return;
+             PowerManager pm = (PowerManager)getSystemService(POWER_SERVICE);
+             cpuWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RemotePhone:HostCpu");
+             cpuWakeLock.setReferenceCounted(false);
+@@ -449,6 +477,15 @@ public class HostService extends Service {
+         return id.substring(0,3) + " " + id.substring(3,6) + " " + id.substring(6,9);
+     }
+ 
++    @Override public void onTaskRemoved(Intent rootIntent) {
++        // Removing the UI task must not stop an active unattended Host service.
++        if (running) {
++            ensureForegroundState();
++            acquireCpuWakeLock();
++            sendHostStatus();
++        }
++        super.onTaskRemoved(rootIntent);
++    }
++
+     @Override public void onDestroy() {
+         running = false;
+         audioEnabled = false;
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -26,7 +26,8 @@
+         <service
+             android:name=".HostService"
+             android:exported="false"
+-            android:foregroundServiceType="mediaProjection" />
++            android:foregroundServiceType="mediaProjection"
++            android:stopWithTask="false" />
+ 
+         <service
+             android:name=".RemoteAccessibilityService"
