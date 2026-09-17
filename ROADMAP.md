@@ -36,9 +36,9 @@ Primary objective: once a Host has been set up, it should stay reachable and rec
 
 ### v0.4.1 Hardening — can follow after v0.4 Core
 
-- [ ] **4.10 Separate lightweight control channel** — status / wake / recovery path independent of video stream
-- [ ] **4.11 Battery / OEM hardening** — OnePlus / Samsung / Xiaomi battery optimization and auto-start guidance
-- [ ] **4.12 Advanced reboot recovery** — restore everything Android permits after reboot and clearly expose screen-capture approval state
+- [x] **4.10 Separate lightweight control channel** — status / wake / recovery path independent of video stream. Implementation complete; physical validation deferred to 4.9.
+- [x] **4.11 Battery / OEM hardening** — OnePlus / Samsung / Xiaomi battery optimization and auto-start guidance. Implementation complete; physical validation deferred to 4.9.
+- [x] **4.12 Advanced reboot recovery** — restore everything Android permits after reboot and clearly expose screen-capture approval state. Implementation complete; physical validation deferred to 4.9.
 - [ ] **4.13 Edge-case failure handling** — unusual OEM/network/process failure cases discovered in field testing
 
 ### Already present in the v0.4 codebase
