@@ -48,10 +48,7 @@ public class ViewerActivity extends Activity {
     private volatile long lastFrameElapsed;
     private volatile String lastHostState = "Host ready";
     private volatile boolean videoStale;
-    private enum HostUiState {
-        READY, SLEEPING, LOCKED, STREAM_UNAVAILABLE, NEEDS_CAPTURE_APPROVAL, OFFLINE, RECONNECTING
-    }
-    private volatile HostUiState hostUiState = HostUiState.OFFLINE;
+    private volatile HostStateManager.State hostUiState = HostStateManager.State.OFFLINE;
 
     @Override public void onCreate(Bundle b) {
         super.onCreate(b);
@@ -391,7 +388,7 @@ public class ViewerActivity extends Activity {
                 readSession(ch);
                 if (manualDisconnect || destroyed) break;
                 runOnUiThread(() -> {
-                    hostUiState = HostUiState.RECONNECTING;
+                    hostUiState = HostStateManager.State.RECONNECTING;
                     remoteStatus.setText("Reconnecting to Host…");
                     healthStatus.setText("Health: reconnecting…");
                 });
@@ -399,12 +396,12 @@ public class ViewerActivity extends Activity {
                 if (manualDisconnect || destroyed) break;
                 String message = safeMessage(e);
                 if (!everConnected) {
-                    hostUiState = HostUiState.OFFLINE;
+                    hostUiState = HostStateManager.State.OFFLINE;
                     runOnUiThread(() -> status.setText("Connection failed: " + message));
                     break;
                 }
                 runOnUiThread(() -> {
-                    hostUiState = HostUiState.RECONNECTING;
+                    hostUiState = HostStateManager.State.RECONNECTING;
                     remoteStatus.setText("Reconnecting to Host…");
                     healthStatus.setText("Health: reconnecting… " + message);
                 });
@@ -444,26 +441,13 @@ public class ViewerActivity extends Activity {
         }
     }
 
-    private HostUiState stateFromHostStatus(String s) {
-        if ("Host sleeping".equals(s)) return HostUiState.SLEEPING;
-        if ("Host locked".equals(s)) return HostUiState.LOCKED;
-        if ("Host needs capture approval".equals(s)) return HostUiState.NEEDS_CAPTURE_APPROVAL;
-        if ("Host ready".equals(s)) return HostUiState.READY;
-        return HostUiState.STREAM_UNAVAILABLE;
+    private HostStateManager.State stateFromHostStatus(String s) {
+        return HostStateManager.fromHostStatus(s);
     }
 
-    private void setHostUiState(HostUiState state) {
+    private void setHostUiState(HostStateManager.State state) {
         hostUiState = state;
-        final String text;
-        switch (state) {
-            case READY: text = "Host ready"; break;
-            case SLEEPING: text = "Host sleeping"; break;
-            case LOCKED: text = "Host locked"; break;
-            case STREAM_UNAVAILABLE: text = "Stream unavailable — Host still online"; break;
-            case NEEDS_CAPTURE_APPROVAL: text = "Host needs capture approval"; break;
-            case RECONNECTING: text = "Reconnecting to Host…"; break;
-            default: text = "Host offline"; break;
-        }
+        final String text = HostStateManager.controllerLabel(state);
         runOnUiThread(() -> {
             if (remoteStatus != null) remoteStatus.setText(text);
         });
@@ -489,7 +473,7 @@ public class ViewerActivity extends Activity {
             final long silentSeconds = Math.max(1, silentFor / 1000);
             runOnUiThread(() -> {
                 if (channel == ch) {
-                    hostUiState = HostUiState.RECONNECTING;
+                    hostUiState = HostStateManager.State.RECONNECTING;
                     remoteStatus.setText("Reconnecting to Host…");
                     healthStatus.setText("No Host traffic for " + silentSeconds + "s");
                 }
@@ -506,7 +490,7 @@ public class ViewerActivity extends Activity {
                 final long frameAgeSeconds = Math.max(1, frameAge / 1000);
                 runOnUiThread(() -> {
                     if (channel == ch) {
-                        hostUiState = HostUiState.STREAM_UNAVAILABLE;
+                        hostUiState = HostStateManager.State.STREAM_UNAVAILABLE;
                         remoteStatus.setText("Stream unavailable — Host still online");
                         healthStatus.setText("Video stale for " + frameAgeSeconds + "s");
                     }
@@ -590,9 +574,9 @@ public class ViewerActivity extends Activity {
                 videoStale = false;
                 runOnUiThread(() -> {
                     screen.setFrame(bmp);
-                    if (hostUiState == HostUiState.NEEDS_CAPTURE_APPROVAL && channel != null) {
+                    if (hostUiState == HostStateManager.State.CAPTURE_APPROVAL_REQUIRED && channel != null) {
                         lastHostState = "Host ready";
-                        setHostUiState(HostUiState.READY);
+                        setHostUiState(HostStateManager.State.READY);
                     } else if (wasStale && channel != null) {
                         setHostUiState(stateFromHostStatus(lastHostState));
                     }
@@ -692,7 +676,7 @@ public class ViewerActivity extends Activity {
     private void userDisconnect() {
         if (wakeManager != null) wakeManager.cancel();
         manualDisconnect = true;
-        hostUiState = HostUiState.OFFLINE;
+        hostUiState = HostStateManager.State.OFFLINE;
         ControlLink ctl = controlLink;
         controlLink = null;
         if (ctl != null) ctl.close();
@@ -790,11 +774,7 @@ public class ViewerActivity extends Activity {
     }
 
     private String dashboardStatus(String raw) {
-        if ("Host sleeping".equals(raw)) return "Sleeping";
-        if ("Host locked".equals(raw)) return "Locked";
-        if ("Host ready".equals(raw)) return "Online";
-        if ("Host needs capture approval".equals(raw)) return "Online — capture approval";
-        return "Online";
+        return HostStateManager.dashboardLabel(HostStateManager.fromHostStatus(raw));
     }
 
     private void setSavedHostStatus(String id, String value) {
