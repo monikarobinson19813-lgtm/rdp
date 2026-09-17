@@ -1,6 +1,6 @@
 --- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
 +++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-@@ -39,6 +39,10 @@
+@@ -39,5 +39,9 @@
      private volatile long lastFrameElapsed;
      private volatile String lastHostState = "Host ready";
      private volatile boolean videoStale;
