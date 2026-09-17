@@ -16,12 +16,7 @@
          stopAudioPlayback();
 +        activeControlHostId = "";
          leaveViewerUi();
-@@ -744,7 +747,8 @@
-     private void ensureHostStatusLinks(List<MyHosts.HostRecord> hosts) {
-         if (destroyed || hosts == null || !RelayConfig.isConfigured()) return;
-         java.util.HashSet<String> wanted = new java.util.HashSet<>();
-         for (MyHosts.HostRecord h : hosts) {
-             if (h == null || h.remoteId == null) continue;
+@@ -1,2 +1,3 @@
              wanted.add(h.remoteId);
 +            if (h.remoteId.equals(activeControlHostId)) continue;
              if (hostStatusLinks.containsKey(h.remoteId)) continue;
