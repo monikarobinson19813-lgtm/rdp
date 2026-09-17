@@ -39,7 +39,7 @@ Primary objective: once a Host has been set up, it should stay reachable and rec
 - [x] **4.10 Separate lightweight control channel** — status / wake / recovery path independent of video stream. Implementation complete; physical validation deferred to 4.9.
 - [x] **4.11 Battery / OEM hardening** — OnePlus / Samsung / Xiaomi battery optimization and auto-start guidance. Implementation complete; physical validation deferred to 4.9.
 - [x] **4.12 Advanced reboot recovery** — restore everything Android permits after reboot and clearly expose screen-capture approval state. Implementation complete; physical validation deferred to 4.9.
-- [ ] **4.13 Edge-case failure handling** — unusual OEM/network/process failure cases discovered in field testing
+- [x] **4.13 Edge-case failure handling** — reconcile stale capture-approval state when live frames prove capture is active; existing relay/network recovery retained. Implementation complete; physical validation deferred to 4.9.
 
 ### Already present in the v0.4 codebase
 
@@ -59,9 +59,9 @@ A Host left at home/office should remain usable from a remote Controller with no
 
 ## v0.5 — Multi-Host
 
-- [ ] Host dashboard
-- [ ] 2 / 5 / 10 Hosts
-- [ ] Friendly naming
+- [x] Host dashboard — saved Hosts are presented in a dedicated Controller dashboard with saved-Host count.
+- [x] 2 / 5 / 10 Hosts — Controller supports up to 10 saved Hosts with a hard capacity limit and capacity indicator.
+- [x] Friendly naming — saved Hosts retain editable friendly names and display them in the dashboard.
 - [ ] Live online / offline / sleeping status
 - [ ] One-tap connection
 
