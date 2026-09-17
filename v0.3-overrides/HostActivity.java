@@ -14,7 +14,7 @@ import java.util.List;
 public class HostActivity extends Activity {
     private static final int REQ_CAPTURE = 4401;
     private static final int PORT = 49200;
-    private TextView accessStatus, addressText, codeText, hostStatus, deviceIdText;
+    private TextView accessStatus, addressText, codeText, hostStatus, deviceIdText, batteryStatus;
     private EditText friendlyName;
     private String pairingCode;
     private String deviceId;
@@ -31,7 +31,7 @@ public class HostActivity extends Activity {
         root.setPadding(40, 56, 40, 40);
         scroll.addView(root);
 
-        root.addView(t("HOST — v0.3.3", 27));
+        root.addView(t("HOST — v0.4.1", 27));
         root.addView(t("This is the phone kept at home/office and accessed remotely from your Controller.", 15));
 
         friendlyName = new EditText(this);
@@ -48,6 +48,13 @@ public class HostActivity extends Activity {
         Button access = new Button(this);
         access.setText("ENABLE REMOTE CONTROL");
         root.addView(access);
+
+        batteryStatus = t("", 15);
+        batteryStatus.setPadding(0, 18, 0, 6);
+        root.addView(batteryStatus);
+        Button batterySettings = new Button(this);
+        batterySettings.setText("BATTERY / BACKGROUND SETTINGS");
+        root.addView(batterySettings);
 
         deviceIdText = t("", 22);
         deviceIdText.setPadding(0, 28, 0, 6);
@@ -69,6 +76,10 @@ public class HostActivity extends Activity {
 
         hostStatus = t("Host stopped", 16);
         root.addView(hostStatus);
+
+        TextView batteryNote = t("For unattended access, allow RemotePhone to run in the background. On some phones you may also need to disable vendor battery restrictions or enable auto-start manually.", 13);
+        batteryNote.setPadding(0, 18, 0, 6);
+        root.addView(batteryNote);
 
         TextView audioNote = t("Remote audio needs Microphone permission only because Android requires RECORD_AUDIO permission for playback capture. RemotePhone does not use the Host microphone in v0.3.", 13);
         audioNote.setPadding(0, 18, 0, 6);
@@ -97,6 +108,7 @@ public class HostActivity extends Activity {
             Toast.makeText(this, "Host name saved", Toast.LENGTH_SHORT).show();
         });
         access.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+        batterySettings.setOnClickListener(v -> openBatterySettings());
         rotate.setOnClickListener(v -> {
             pairingCode = HostConfig.rotateSessionPin(this);
             refresh();
@@ -131,6 +143,7 @@ public class HostActivity extends Activity {
         pairingCode = HostConfig.getOrCreateSessionPin(this);
         deviceId = HostConfig.getOrCreateRemoteId(this);
         accessStatus.setText(RemoteAccessibilityService.isReady() ? "✓ Remote control enabled" : "⚠ Remote control not enabled yet");
+        refreshBatteryStatus();
         deviceIdText.setText("Remote ID:  " + formatDeviceId(deviceId));
         codeText.setText("Session PIN:  " + pairingCode);
 
@@ -141,6 +154,28 @@ public class HostActivity extends Activity {
         addressText.setText(s.toString().trim());
 
         hostStatus.setText(HostService.isRunning() ? "✓ Host ready" : "Host stopped");
+    }
+
+    private void refreshBatteryStatus() {
+        if (batteryStatus == null) return;
+        if (Build.VERSION.SDK_INT < 23) {
+            batteryStatus.setText("✓ Android battery optimization not applicable on this version");
+            return;
+        }
+        PowerManager pm = (PowerManager)getSystemService(POWER_SERVICE);
+        boolean unrestricted = pm != null && pm.isIgnoringBatteryOptimizations(getPackageName());
+        batteryStatus.setText(unrestricted
+                ? "✓ Android battery optimization: unrestricted"
+                : "⚠ Android may restrict Host background activity");
+    }
+
+    private void openBatterySettings() {
+        try {
+            startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+        } catch (Exception e) {
+            try { startActivity(new Intent(Settings.ACTION_SETTINGS)); }
+            catch (Exception ignored) {}
+        }
     }
 
     private void requestProjection() {
