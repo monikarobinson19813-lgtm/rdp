@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/app/src/main/java/com/remotephone/direct/ControllerSecretStore.java
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,75 @@
 +package com.remotephone.direct;
 +
 +import android.content.Context;
@@ -77,28 +77,28 @@
 +}
 --- a/app/src/main/java/com/remotephone/direct/ViewerActivity.java
 +++ b/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-@@ -1,3 +1,6 @@
+@@ -1,2 +1,5 @@
      private volatile ControlLink controlLink;
 +    private final java.util.concurrent.ConcurrentHashMap<String, ControlLink> hostStatusLinks = new java.util.concurrent.ConcurrentHashMap<>();
 +    private final java.util.concurrent.ConcurrentHashMap<String, String> hostStatusById = new java.util.concurrent.ConcurrentHashMap<>();
 +    private volatile long lastHostStatusPingElapsed;
      private final ExecutorService io = Executors.newSingleThreadExecutor();
-@@ -1,3 +1,4 @@
+@@ -1,2 +1,3 @@
          List<MyHosts.HostRecord> all = MyHosts.load(this);
 +        ensureHostStatusLinks(all);
          if (dashboardSummary != null)
-@@ -1,3 +1,4 @@
+@@ -1,3 +1,3 @@
              String n = h.name == null || h.name.trim().isEmpty() ? "Host" : h.name.trim();
 -            choose.setText(n + "\n" + formatDeviceId(h.remoteId));
 +            choose.setText(n + "\n" + formatDeviceId(h.remoteId) + "\n" + hostStatusById.getOrDefault(h.remoteId, "Offline"));
              choose.setAllCaps(false);
-@@ -1,4 +1,6 @@
+@@ -1,3 +1,5 @@
              remove.setOnClickListener(v -> {
 +                stopHostStatusLink(h.remoteId);
 +                ControllerSecretStore.removePin(this, h.remoteId);
                  MyHosts.remove(this, h.remoteId);
                  refreshHosts();
-@@ -1,4 +1,5 @@
+@@ -1,3 +1,4 @@
          saveCurrentHost();
 +        stopHostStatusLink(id);
          manualDisconnect = false;
@@ -110,13 +110,12 @@
 +                runOnUiThread(this::refreshHosts);
                  resetHealthCounters();
                  channel = ch;
-@@ -1,4 +1,5 @@
+@@ -1,3 +1,4 @@
      private void healthTick() {
          if (destroyed) return;
 +        pingHostStatusLinks();
          CryptoChannel ch = channel;
-         if (ch == null) return;
-@@ -1,7 +1,9 @@
+@@ -1,5 +1,7 @@
      @Override protected void onDestroy() {
          destroyed = true;
          manualDisconnect = true;
@@ -124,7 +123,7 @@
 +        hostStatusLinks.clear();
          ControlLink ctl = controlLink;
          controlLink = null;
-@@ -1,2 +1,72 @@
+@@ -1,1 +1,76 @@
 +    private void ensureHostStatusLinks(List<MyHosts.HostRecord> hosts) {
 +        if (destroyed || hosts == null || !RelayConfig.isConfigured()) return;
 +        java.util.HashSet<String> wanted = new java.util.HashSet<>();
