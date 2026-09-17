@@ -1,0 +1,20 @@
+--- a/app/src/main/java/com/remotephone/direct/HostService.java
++++ b/app/src/main/java/com/remotephone/direct/HostService.java
+@@ -65,6 +65,18 @@
+         }
+         if (running) {
++            if (projection == null && intent != null) {
++                Intent data = (Intent) intent.getParcelableExtra(EXTRA_RESULT_DATA);
++                int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED);
++                if (data != null && resultCode == Activity.RESULT_OK) {
++                    startProjection(resultCode, data);
++                    startDisplayWatcher();
++                    startAudioCapture();
++                    try { ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).cancel(NOTIF + 1); }
++                    catch (Exception ignored) {}
++                    sendHostStatus();
++                }
++            }
+             ensureForegroundState();
+             acquireCpuWakeLock();
+             return START_STICKY;
