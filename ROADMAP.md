@@ -30,7 +30,7 @@ Primary objective: once a Host has been set up, it should stay reachable and rec
 - [x] **4.4 Reliable foreground Host service** — explicitly remain active across normal background use, screen-off and UI task removal; reassert the foreground notification and CPU wake lock when needed. Implementation complete; physical validation deferred to 4.9.
 - [x] **4.5 Automatic Host-service recovery** — remember that the Host should remain active, recover identity/Remote ID/PIN/foreground service/wake lock/local server/relay after Android recreates the service, expose capture-approval state, and resume screen capture when the user later re-approves it. Implementation complete; physical validation deferred to 4.9.
 - [x] **4.6 Relay self-recovery** — enforce a single relay worker, discard stale relay transports/sessions, reconnect repeatedly and use bounded retry backoff during relay/network outages. Implementation complete; physical validation deferred to 4.9.
-- [ ] **4.7 Network-change recovery** — recover across temporary Internet loss and Wi-Fi/mobile-data changes
+- [x] **4.7 Network-change recovery** — listen for Host connectivity changes and actively discard the stale relay/session so the relay loop reconnects over the new/returned network rather than waiting on the old transport. Implementation complete; physical validation deferred to 4.9.
 - [ ] **4.8 Host state machine** — Ready / Sleeping / Locked / Stream unavailable / Needs capture approval / Offline / Reconnecting
 - [ ] **4.9 Unattended stress testing** — reconnect, screen-off, idle, network loss, service failure and multi-hour soak tests
 
