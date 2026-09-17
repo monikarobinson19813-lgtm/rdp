@@ -92,6 +92,99 @@ jobs:
               p.write_text(s)
           PY
 
+      - name: Wire v0.6 Host state manager into clean baseline
+        if: github.ref == 'refs/heads/v0.4'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          p = Path('v0.5-baseline/app/src/main/java/com/remotephone/direct/ViewerActivity.java')
+          s = p.read_text()
+          marker = 'private volatile HostStateManager.State hostUiState'
+          if marker not in s:
+              state_block = '''    private enum HostUiState {
+                  READY, SLEEPING, LOCKED, STREAM_UNAVAILABLE, NEEDS_CAPTURE_APPROVAL, OFFLINE, RECONNECTING
+              }
+              private volatile HostUiState hostUiState = HostUiState.OFFLINE;'''
+              state_replacement = '''    private volatile HostStateManager.State hostUiState = HostStateManager.State.OFFLINE;'''
+              if s.count(state_block) != 1:
+                  raise SystemExit('Host state enum anchor mismatch')
+              s = s.replace(state_block, state_replacement, 1)
+
+              old_mapper = '''    private HostUiState stateFromHostStatus(String s) {
+                  if ("Host sleeping".equals(s)) return HostUiState.SLEEPING;
+                  if ("Host locked".equals(s)) return HostUiState.LOCKED;
+                  if ("Host needs capture approval".equals(s)) return HostUiState.NEEDS_CAPTURE_APPROVAL;
+                  if ("Host ready".equals(s)) return HostUiState.READY;
+                  return HostUiState.STREAM_UNAVAILABLE;
+              }'''
+              new_mapper = '''    private HostStateManager.State stateFromHostStatus(String s) {
+                  return HostStateManager.fromHostStatus(s);
+              }'''
+              if s.count(old_mapper) != 1:
+                  raise SystemExit('Host state mapper anchor mismatch')
+              s = s.replace(old_mapper, new_mapper, 1)
+
+              old_setter = '''    private void setHostUiState(HostUiState state) {
+                  hostUiState = state;
+                  final String text;
+                  switch (state) {
+                      case READY: text = "Host ready"; break;
+                      case SLEEPING: text = "Host sleeping"; break;
+                      case LOCKED: text = "Host locked"; break;
+                      case STREAM_UNAVAILABLE: text = "Stream unavailable — Host still online"; break;
+                      case NEEDS_CAPTURE_APPROVAL: text = "Host needs capture approval"; break;
+                      case RECONNECTING: text = "Reconnecting to Host…"; break;
+                      default: text = "Host offline"; break;
+                  }
+                  runOnUiThread(() -> {
+                      if (remoteStatus != null) remoteStatus.setText(text);
+                  });
+              }'''
+              new_setter = '''    private void setHostUiState(HostStateManager.State state) {
+                  hostUiState = state;
+                  final String text = HostStateManager.controllerLabel(state);
+                  runOnUiThread(() -> {
+                      if (remoteStatus != null) remoteStatus.setText(text);
+                  });
+              }'''
+              if s.count(old_setter) != 1:
+                  raise SystemExit('Host state setter anchor mismatch')
+              s = s.replace(old_setter, new_setter, 1)
+
+              dashboard = '''    private String dashboardStatus(String raw) {
+                  if ("Host sleeping".equals(raw)) return "Sleeping";
+                  if ("Host locked".equals(raw)) return "Locked";
+                  if ("Host ready".equals(raw)) return "Online";
+                  if ("Host needs capture approval".equals(raw)) return "Online — capture approval";
+                  return "Online";
+              }'''
+              dashboard_replacement = '''    private String dashboardStatus(String raw) {
+                  return HostStateManager.dashboardLabel(HostStateManager.fromHostStatus(raw));
+              }'''
+              if s.count(dashboard) != 1:
+                  raise SystemExit('Dashboard state anchor mismatch')
+              s = s.replace(dashboard, dashboard_replacement, 1)
+
+              token_replacements = {
+                  'HostUiState.RECONNECTING': 'HostStateManager.State.RECONNECTING',
+                  'HostUiState.OFFLINE': 'HostStateManager.State.OFFLINE',
+                  'HostUiState.STREAM_UNAVAILABLE': 'HostStateManager.State.STREAM_UNAVAILABLE',
+                  'HostUiState.NEEDS_CAPTURE_APPROVAL': 'HostStateManager.State.CAPTURE_APPROVAL_REQUIRED',
+                  'HostUiState.READY': 'HostStateManager.State.READY',
+                  'HostUiState.SLEEPING': 'HostStateManager.State.SLEEPING',
+                  'HostUiState.LOCKED': 'HostStateManager.State.LOCKED',
+              }
+              for old, new in token_replacements.items():
+                  s = s.replace(old, new)
+
+              if re.search(r'\bHostUiState\b', s):
+                  raise SystemExit('Legacy HostUiState type references remain after wiring')
+              p.write_text(s)
+          PY
+
       - name: Use consolidated v0.5 Android baseline
         if: github.ref == 'refs/heads/v0.4'
         shell: bash
@@ -104,6 +197,8 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
+        with:
+          distribution: temurin
           java-version: '17'
 
       - name: Set up Gradle
@@ -114,7 +209,7 @@ jobs:
       - name: Build debug APK and AAB
         run: gradle :app:assembleDebug :app:bundleDebug --stacktrace
 
-      - name: Commit validated v0.6 wake wiring
+      - name: Commit validated v0.6 Controller wiring
         if: github.ref == 'refs/heads/v0.4'
         shell: bash
         run: |
@@ -122,7 +217,7 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add v0.5-baseline/app/src/main/java/com/remotephone/direct/ViewerActivity.java
-            git commit -m "v0.6: wire validated wake manager into Controller"
+            git commit -m "v0.6: wire validated Host state manager into Controller"
             git push origin HEAD:v0.4
           fi
 
