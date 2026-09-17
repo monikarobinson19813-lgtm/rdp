@@ -7,6 +7,7 @@ import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioTrack;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
@@ -16,19 +17,24 @@ import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
 
 public class ViewerActivity extends Activity {
     private LinearLayout connectPanel, remotePanel, hostsList;
     private EditText remoteId, friendlyName, address, code, textInput;
-    private TextView status, remoteStatus;
+    private TextView status, remoteStatus, healthStatus;
     private RemoteScreenView screen;
     private volatile CryptoChannel channel;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private final ScheduledExecutorService health = Executors.newSingleThreadScheduledExecutor();
     private volatile boolean audioOn;
     private volatile boolean manualDisconnect;
     private volatile boolean destroyed;
+    private volatile long lastSeenElapsed;
+    private volatile long lastPingAttemptElapsed;
+    private volatile long lastPingSentElapsed;
+    private volatile long latencyMs = -1;
+    private volatile boolean pingOutstanding;
     private AudioTrack audioTrack;
 
     @Override public void onCreate(Bundle b) {
@@ -45,7 +51,7 @@ public class ViewerActivity extends Activity {
         connectPanel.setBackgroundColor(0xFFFFFFFF);
         connectScroll.addView(connectPanel);
 
-        connectPanel.addView(text("CONTROLLER — v0.3", 27));
+        connectPanel.addView(text("CONTROLLER — v0.4", 27));
         connectPanel.addView(text("Choose a saved Host or add a Host using its Remote ID.", 15));
 
         TextView myHostsTitle = text("My Hosts", 20);
@@ -106,8 +112,16 @@ public class ViewerActivity extends Activity {
         remoteStatus.setTextColor(0xFFFFFFFF);
         remoteStatus.setTextSize(14);
         remoteStatus.setGravity(Gravity.CENTER);
-        remoteStatus.setPadding(8, 6, 8, 6);
+        remoteStatus.setPadding(8, 6, 8, 2);
         remotePanel.addView(remoteStatus, new LinearLayout.LayoutParams(-1, -2));
+
+        healthStatus = new TextView(this);
+        healthStatus.setText("Ping measuring…  •  Last seen --");
+        healthStatus.setTextColor(0xFFBBBBBB);
+        healthStatus.setTextSize(12);
+        healthStatus.setGravity(Gravity.CENTER);
+        healthStatus.setPadding(8, 0, 8, 6);
+        remotePanel.addView(healthStatus, new LinearLayout.LayoutParams(-1, -2));
 
         screen = new RemoteScreenView(this);
         remotePanel.addView(screen, new LinearLayout.LayoutParams(-1, 0, 1f));
@@ -174,6 +188,7 @@ public class ViewerActivity extends Activity {
         });
         screen.setGestureSink(this::sendGesture);
         refreshHosts();
+        health.scheduleAtFixedRate(this::healthTick, 1, 1, TimeUnit.SECONDS);
     }
 
     @Override protected void onResume() {
@@ -294,6 +309,7 @@ public class ViewerActivity extends Activity {
                 String expectedFingerprint = saved == null ? "" : saved.hostFingerprint;
                 ch = CryptoChannel.connect(socket, pin, expectedFingerprint);
                 MyHosts.pinFingerprint(this, id, ch.peerFingerprint());
+                resetHealthCounters();
                 channel = ch;
 
                 boolean wasReconnect = everConnected;
@@ -303,13 +319,17 @@ public class ViewerActivity extends Activity {
                         enterViewerUi("Connected — checking Host status…");
                     else
                         remoteStatus.setText(wasReconnect ? "Reconnected to Host" : "Connected to Host");
+                    healthStatus.setText("Ping measuring…  •  Last seen now");
                     Toast.makeText(this, wasReconnect ? "Reconnected" : "Connected to Host", Toast.LENGTH_SHORT).show();
                 });
 
                 if (audioOn) sendControl(CryptoChannel.CONTROL_AUDIO_ON);
                 readSession(ch);
                 if (manualDisconnect || destroyed) break;
-                runOnUiThread(() -> remoteStatus.setText("Connection lost — reconnecting…"));
+                runOnUiThread(() -> {
+                    remoteStatus.setText("Connection lost — reconnecting…");
+                    healthStatus.setText("Health: reconnecting…");
+                });
             } catch (Exception e) {
                 if (manualDisconnect || destroyed) break;
                 String message = safeMessage(e);
@@ -317,9 +337,13 @@ public class ViewerActivity extends Activity {
                     runOnUiThread(() -> status.setText("Connection failed: " + message));
                     break;
                 }
-                runOnUiThread(() -> remoteStatus.setText("Reconnecting… " + message));
+                runOnUiThread(() -> {
+                    remoteStatus.setText("Reconnecting… " + message);
+                    healthStatus.setText("Health: reconnecting…");
+                });
             } finally {
                 if (channel == ch) channel = null;
+                pingOutstanding = false;
                 if (ch != null) ch.close();
                 else if (socket != null) try { socket.close(); } catch (Exception ignored) {}
             }
@@ -345,15 +369,72 @@ public class ViewerActivity extends Activity {
     private void readSession(CryptoChannel ch) throws Exception {
         while (!manualDisconnect && !destroyed && channel == ch) {
             CryptoChannel.Message m = ch.read();
+            lastSeenElapsed = SystemClock.elapsedRealtime();
             if (m.type == CryptoChannel.TYPE_FRAME) handleFrame(m.payload);
             else if (m.type == CryptoChannel.TYPE_AUDIO) handleAudio(m.payload);
             else if (m.type == CryptoChannel.TYPE_STATUS) handleStatus(m.payload);
+            else if (m.type == CryptoChannel.TYPE_PING) handleHeartbeatResponse();
         }
     }
 
     private void handleStatus(byte[] p) {
         String s = new String(p, StandardCharsets.UTF_8);
         runOnUiThread(() -> remoteStatus.setText(s));
+    }
+
+    private void healthTick() {
+        if (destroyed) return;
+        CryptoChannel ch = channel;
+        if (ch == null) return;
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastPingAttemptElapsed >= 3000 &&
+                (!pingOutstanding || now - lastPingSentElapsed >= 6000)) {
+            lastPingAttemptElapsed = now;
+            lastPingSentElapsed = now;
+            pingOutstanding = true;
+            try {
+                ch.send(CryptoChannel.TYPE_PING, new byte[0]);
+            } catch (Exception e) {
+                if (channel == ch) ch.close();
+                return;
+            }
+        }
+        refreshHealthUi(ch);
+    }
+
+    private void handleHeartbeatResponse() {
+        long now = SystemClock.elapsedRealtime();
+        lastSeenElapsed = now;
+        if (pingOutstanding && lastPingSentElapsed > 0) {
+            latencyMs = Math.max(0, now - lastPingSentElapsed);
+            pingOutstanding = false;
+        }
+        CryptoChannel ch = channel;
+        if (ch != null) refreshHealthUi(ch);
+    }
+
+    private void resetHealthCounters() {
+        long now = SystemClock.elapsedRealtime();
+        lastSeenElapsed = now;
+        lastPingAttemptElapsed = 0;
+        lastPingSentElapsed = 0;
+        latencyMs = -1;
+        pingOutstanding = false;
+    }
+
+    private void refreshHealthUi(CryptoChannel expectedChannel) {
+        if (expectedChannel == null || healthStatus == null) return;
+        long now = SystemClock.elapsedRealtime();
+        long seenAgeSeconds = lastSeenElapsed > 0 ? Math.max(0, (now - lastSeenElapsed) / 1000) : -1;
+        String pingText = latencyMs >= 0 ? "Ping " + latencyMs + " ms" : "Ping measuring…";
+        String seenText;
+        if (seenAgeSeconds < 0) seenText = "Last seen --";
+        else if (seenAgeSeconds <= 1) seenText = "Last seen now";
+        else seenText = "Last seen " + seenAgeSeconds + "s ago";
+        runOnUiThread(() -> {
+            if (channel == expectedChannel && healthStatus != null)
+                healthStatus.setText(pingText + "  •  " + seenText);
+        });
     }
 
     private void handleFrame(byte[] p) {
@@ -451,6 +532,7 @@ public class ViewerActivity extends Activity {
         manualDisconnect = true;
         CryptoChannel c = channel;
         channel = null;
+        pingOutstanding = false;
         if (c != null) c.close();
         audioOn = false;
         stopAudioPlayback();
@@ -463,9 +545,11 @@ public class ViewerActivity extends Activity {
         manualDisconnect = true;
         CryptoChannel c = channel;
         channel = null;
+        pingOutstanding = false;
         if (c != null) c.close();
         stopAudioPlayback();
         io.shutdownNow();
+        health.shutdownNow();
         super.onDestroy();
     }
 
