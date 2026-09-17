@@ -1,0 +1,43 @@
+--- a/app/src/main/java/com/remotephone/direct/HostService.java
++++ b/app/src/main/java/com/remotephone/direct/HostService.java
+@@ -55,2 +55,3 @@
+     private BroadcastReceiver screenReceiver;
++    private BroadcastReceiver networkReceiver;
+     private DisplayManager displayManager;
+@@ -118,2 +119,3 @@
+         registerScreenStateReceiver();
++        registerNetworkStateReceiver();
+         startProjection(resultCode, data);
+@@ -165,2 +167,3 @@
+         registerScreenStateReceiver();
++        registerNetworkStateReceiver();
+         startLocalServer();
+@@ -230,3 +233,24 @@
+     }
+ 
++    private void registerNetworkStateReceiver() {
++        if (networkReceiver != null) return;
++        networkReceiver = new BroadcastReceiver() {
++            @Override public void onReceive(Context context, Intent intent) {
++                if (!running || !RelayConfig.isConfigured()) return;
++                RelaySocket rs = relaySocket;
++                if (rs == null) return;
++                rs.close();
++                CryptoChannel c = channel;
++                if (c != null) c.close();
++            }
++        };
++        IntentFilter f = new IntentFilter(android.net.ConnectivityManager.CONNECTIVITY_ACTION);
++        try {
++            if (Build.VERSION.SDK_INT >= 33) registerReceiver(networkReceiver, f, Context.RECEIVER_NOT_EXPORTED);
++            else registerReceiver(networkReceiver, f);
++        } catch (Exception ignored) {
++            networkReceiver = null;
++        }
++    }
++
+     private String hostState() {
+@@ -570,2 +594,3 @@
+         try { if (screenReceiver != null) unregisterReceiver(screenReceiver); } catch(Exception ignored) {}
++        try { if (networkReceiver != null) unregisterReceiver(networkReceiver); } catch(Exception ignored) {}
+         try { if (audioRecord != null) { audioRecord.stop(); audioRecord.release(); } } catch(Exception ignored) {}
