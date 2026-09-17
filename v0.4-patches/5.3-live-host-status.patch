@@ -123,7 +123,7 @@
 +        hostStatusLinks.clear();
          ControlLink ctl = controlLink;
          controlLink = null;
-@@ -1,1 +1,76 @@
+@@ -1,1 +1,77 @@
 +    private void ensureHostStatusLinks(List<MyHosts.HostRecord> hosts) {
 +        if (destroyed || hosts == null || !RelayConfig.isConfigured()) return;
 +        java.util.HashSet<String> wanted = new java.util.HashSet<>();
