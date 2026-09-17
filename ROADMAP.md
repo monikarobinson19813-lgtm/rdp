@@ -62,8 +62,8 @@ A Host left at home/office should remain usable from a remote Controller with no
 - [x] Host dashboard — saved Hosts are presented in a dedicated Controller dashboard with saved-Host count.
 - [x] 2 / 5 / 10 Hosts — Controller supports up to 10 saved Hosts with a hard capacity limit and capacity indicator.
 - [x] Friendly naming — saved Hosts retain editable friendly names and display them in the dashboard.
-- [ ] Live online / offline / sleeping status
-- [ ] One-tap connection
+- [x] Live online / offline / sleeping status — saved Hosts maintain a lightweight background status link and display current reachability/state.
+- [x] One-tap connection — after one successful secure connection, the session PIN is stored encrypted with Android Keystore and a saved Host can reconnect with one tap while retaining fingerprint verification.
 
 ## v0.6 — Lock / sleep intelligence
 
