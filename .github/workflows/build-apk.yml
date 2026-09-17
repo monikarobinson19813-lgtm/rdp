@@ -45,6 +45,17 @@ jobs:
           }
           EOF
 
+      - name: Apply v0.4 modular patches
+        if: github.ref == 'refs/heads/v0.4'
+        shell: bash
+        run: |
+          if [ -d v0.4-patches ]; then
+            for patch_file in $(find v0.4-patches -maxdepth 1 -type f -name '*.patch' | sort); do
+              echo "Applying ${patch_file}"
+              patch --batch --forward -p1 < "${patch_file}"
+            done
+          fi
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
