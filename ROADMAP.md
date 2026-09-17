@@ -28,8 +28,8 @@ Primary objective: once a Host has been set up, it should stay reachable and rec
 - [x] **4.2 Connection watchdog** — detect dead/stuck session and force the existing reconnect loop to recover automatically after prolonged loss of Host traffic. Implementation complete; physical validation deferred to 4.9.
 - [x] **4.3 Video watchdog / stale-frame detection** — distinguish a stale video stream from a dead Host connection using frame-age tracking while heartbeat remains healthy. Implementation complete; physical validation deferred to 4.9.
 - [x] **4.4 Reliable foreground Host service** — explicitly remain active across normal background use, screen-off and UI task removal; reassert the foreground notification and CPU wake lock when needed. Implementation complete; physical validation deferred to 4.9.
-- [ ] **4.5 Automatic Host-service recovery** — recover non-protected Host functions if Android kills the process/service
-- [ ] **4.6 Relay self-recovery** — repeated relay disconnect/reconnect without stale sessions or manual restart
+- [x] **4.5 Automatic Host-service recovery** — remember that the Host should remain active, recover identity/Remote ID/PIN/foreground service/wake lock/local server/relay after Android recreates the service, expose capture-approval state, and resume screen capture when the user later re-approves it. Implementation complete; physical validation deferred to 4.9.
+- [x] **4.6 Relay self-recovery** — enforce a single relay worker, discard stale relay transports/sessions, reconnect repeatedly and use bounded retry backoff during relay/network outages. Implementation complete; physical validation deferred to 4.9.
 - [ ] **4.7 Network-change recovery** — recover across temporary Internet loss and Wi-Fi/mobile-data changes
 - [ ] **4.8 Host state machine** — Ready / Sleeping / Locked / Stream unavailable / Needs capture approval / Offline / Reconnecting
 - [ ] **4.9 Unattended stress testing** — reconnect, screen-off, idle, network loss, service failure and multi-hour soak tests
