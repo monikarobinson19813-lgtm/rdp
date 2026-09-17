@@ -1,6 +1,6 @@
 --- a/app/src/main/java/com/remotephone/direct/HostService.java
 +++ b/app/src/main/java/com/remotephone/direct/HostService.java
-@@ -48,7 +48,12 @@ public class HostService extends Service {
+@@ -48,12 +48,21 @@ public class HostService extends Service {
      public static boolean isRunning() { return running; }
      @Override public IBinder onBind(Intent i) { return null; }
  
@@ -23,7 +23,7 @@
          if (intent == null) {
              postNeedsApprovalNotification();
              stopSelf();
-@@ -79,13 +84,7 @@ public class HostService extends Service {
+@@ -79,12 +84,7 @@ public class HostService extends Service {
              return START_NOT_STICKY;
          }
  
@@ -71,7 +71,7 @@
      private void createNotificationChannel() {
          if (Build.VERSION.SDK_INT >= 26) {
              NotificationManager n = (NotificationManager)getSystemService(NOTIFICATION_SERVICE);
-@@ -136,6 +162,8 @@ public class HostService extends Service {
+@@ -136,6 +162,7 @@ public class HostService extends Service {
  
      private void acquireCpuWakeLock() {
          try {
@@ -79,7 +79,7 @@
              PowerManager pm = (PowerManager)getSystemService(POWER_SERVICE);
              cpuWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RemotePhone:HostCpu");
              cpuWakeLock.setReferenceCounted(false);
-@@ -449,6 +477,15 @@ public class HostService extends Service {
+@@ -449,6 +477,16 @@ public class HostService extends Service {
          return id.substring(0,3) + " " + id.substring(3,6) + " " + id.substring(6,9);
      }
  

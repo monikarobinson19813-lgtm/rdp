@@ -11,7 +11,7 @@
  
      @Override public void onCreate(Bundle b) {
          super.onCreate(b);
-@@ -382,7 +386,11 @@ public class ViewerActivity extends Activity {
+@@ -382,6 +386,8 @@ public class ViewerActivity extends Activity {
  
      private void handleStatus(byte[] p) {
          String s = new String(p, StandardCharsets.UTF_8);
@@ -20,7 +20,7 @@
          runOnUiThread(() -> remoteStatus.setText(s));
      }
  
-@@ -402,6 +410,19 @@ public class ViewerActivity extends Activity {
+@@ -402,6 +410,20 @@ public class ViewerActivity extends Activity {
              if (channel == ch) ch.close();
              return;
          }
@@ -51,7 +51,7 @@
      }
  
      private void refreshHealthUi(CryptoChannel expectedChannel) {
-@@ -444,9 +468,18 @@ public class ViewerActivity extends Activity {
+@@ -444,9 +468,16 @@ public class ViewerActivity extends Activity {
          if (seenAgeSeconds < 0) seenText = "Last seen --";
          else if (seenAgeSeconds <= 1) seenText = "Last seen now";
          else seenText = "Last seen " + seenAgeSeconds + "s ago";
@@ -69,7 +69,7 @@
          });
      }
  
-@@ -460,7 +493,15 @@ public class ViewerActivity extends Activity {
+@@ -460,6 +493,14 @@ public class ViewerActivity extends Activity {
              byte[] jpg = new byte[len];
              d.readFully(jpg);
              Bitmap bmp = BitmapFactory.decodeByteArray(jpg, 0, jpg.length);
