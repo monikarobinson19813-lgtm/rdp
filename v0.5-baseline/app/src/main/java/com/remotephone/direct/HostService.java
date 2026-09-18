@@ -374,9 +374,9 @@ public class HostService extends Service {
             double age = streamFreshnessEwmaMs;
 
             int target;
-            if (age >= 2000d) target = 3;
-            else if (age >= 900d) target = 2;
-            else if (age >= 450d) target = 1;
+            if (age >= 2500d) target = 3;
+            else if (age >= 1200d) target = 2;
+            else if (age >= 550d) target = 1;
             else target = 0;
 
             if (target > adaptiveStreamLevel) {
@@ -589,20 +589,20 @@ public class HostService extends Service {
             int byteBudget;
             long queueBudget;
             if (level >= 3) {
-                outW = Math.min(180, w);
-                jpegQuality = 10;
-                byteBudget = 9 * 1024;
-                queueBudget = 9L * 1024L;
+                outW = Math.min(240, w);
+                jpegQuality = 16;
+                byteBudget = 14 * 1024;
+                queueBudget = 14L * 1024L;
             } else if (level == 2) {
-                outW = Math.min(300, w);
-                jpegQuality = 22;
-                byteBudget = 18 * 1024;
-                queueBudget = 18L * 1024L;
+                outW = Math.min(400, w);
+                jpegQuality = 28;
+                byteBudget = 26 * 1024;
+                queueBudget = 26L * 1024L;
             } else if (level == 1) {
-                outW = Math.min(480, w);
-                jpegQuality = 32;
-                byteBudget = 32 * 1024;
-                queueBudget = 32L * 1024L;
+                outW = Math.min(540, w);
+                jpegQuality = 36;
+                byteBudget = 40 * 1024;
+                queueBudget = 40L * 1024L;
             } else {
                 outW = w;
                 jpegQuality = 45;
@@ -623,7 +623,7 @@ public class HostService extends Service {
 
             if (level > 0 && jpeg.length > byteBudget) {
                 jpg.reset();
-                output.compress(Bitmap.CompressFormat.JPEG, Math.max(8, jpegQuality - 10), jpg);
+                output.compress(Bitmap.CompressFormat.JPEG, Math.max(12, jpegQuality - 8), jpg);
                 jpeg = jpg.toByteArray();
             }
 
