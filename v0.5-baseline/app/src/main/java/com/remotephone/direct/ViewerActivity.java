@@ -396,6 +396,8 @@ public class ViewerActivity extends Activity {
                         @Override public void onMessage(CryptoChannel.Message message) {
                             if (message.type == CryptoChannel.TYPE_STATUS) {
                                 handleStatus(message.payload);
+                            } else if (message.type == CryptoChannel.TYPE_UNLOCK_RESULT) {
+                                handleUnlockResult(message.payload);
                             } else if (message.type == CryptoChannel.TYPE_PING) {
                                 handleHeartbeatResponse();
                             }
@@ -753,16 +755,39 @@ public class ViewerActivity extends Activity {
     }
 
     private void sendUnlockPayload(byte[] payload) {
-        CryptoChannel ch = channel;
-        if (ch == null) {
-            if (lockScreenManager != null) lockScreenManager.showTransportUnavailable();
-            return;
-        }
         if (hostUiState != HostStateManager.State.LOCKED) {
             if (lockScreenManager != null) lockScreenManager.showNotLocked();
             return;
         }
+
         final byte[] packet = java.util.Arrays.copyOf(payload, payload.length);
+        ControlLink ctl = controlLink;
+        if (ctl != null && ctl.isConnected()) {
+            new Thread(() -> {
+                try {
+                    ctl.send(CryptoChannel.TYPE_UNLOCK, packet);
+                } catch (Exception e) {
+                    ctl.reset();
+                    CryptoChannel fallback = channel;
+                    if (fallback != null) {
+                        try { fallback.send(CryptoChannel.TYPE_UNLOCK, packet); }
+                        catch (Exception ignored) { fallback.close(); }
+                    } else if (lockScreenManager != null) {
+                        lockScreenManager.showTransportUnavailable();
+                    }
+                } finally {
+                    java.util.Arrays.fill(packet, (byte)0);
+                }
+            }, "remotephone-unlock-control").start();
+            return;
+        }
+
+        CryptoChannel ch = channel;
+        if (ch == null) {
+            java.util.Arrays.fill(packet, (byte)0);
+            if (lockScreenManager != null) lockScreenManager.showTransportUnavailable();
+            return;
+        }
         ioSend(() -> {
             try { ch.send(CryptoChannel.TYPE_UNLOCK, packet); }
             finally { java.util.Arrays.fill(packet, (byte)0); }

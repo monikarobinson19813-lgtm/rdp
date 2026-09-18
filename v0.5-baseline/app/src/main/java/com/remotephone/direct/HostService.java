@@ -740,6 +740,11 @@ public class HostService extends Service {
                                     message.payload != null && message.payload.length > 0 &&
                                     message.payload[0] == CryptoChannel.CONTROL_WAKE) {
                                 wakeHost();
+                            } else if (message.type == CryptoChannel.TYPE_UNLOCK) {
+                                byte result = evaluateUnlockRequest(message.payload);
+                                current.send(CryptoChannel.TYPE_UNLOCK_RESULT, new byte[]{result});
+                                new Handler(Looper.getMainLooper()).postDelayed(
+                                        HostService.this::sendHostStatus, 900);
                             }
                         } catch (Exception e) {
                             current.reset();
@@ -825,24 +830,35 @@ public class HostService extends Service {
         catch(Exception ignored) {}
     }
 
-    private void handleUnlock(CryptoChannel c, byte[] p) {
+    private byte evaluateUnlockRequest(byte[] p) {
         byte result = CryptoChannel.UNLOCK_RESULT_BAD_REQUEST;
         try {
             KeyguardManager km = (KeyguardManager)getSystemService(KEYGUARD_SERVICE);
-            boolean locked = km != null && (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? km.isDeviceLocked() : km.isKeyguardLocked());
+            boolean locked = km != null && (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                    ? km.isDeviceLocked()
+                    : km.isKeyguardLocked());
             if (!locked) {
-                result = CryptoChannel.UNLOCK_RESULT_NOT_LOCKED;
-            } else if (p != null && p.length >= 2) {
-                byte method = p[0];
-                String credential = new String(p, 1, p.length - 1, StandardCharsets.UTF_8);
-                boolean accepted = method == CryptoChannel.UNLOCK_PIN
-                        ? RemoteAccessibilityService.submitKnownPin(credential)
-                        : method == CryptoChannel.UNLOCK_PATTERN && RemoteAccessibilityService.submitKnownPattern(credential);
-                result = accepted ? CryptoChannel.UNLOCK_RESULT_ACCEPTED : CryptoChannel.UNLOCK_RESULT_UNSUPPORTED;
+                return CryptoChannel.UNLOCK_RESULT_NOT_LOCKED;
             }
+            if (p == null || p.length < 2) return result;
+
+            byte method = p[0];
+            String credential = new String(p, 1, p.length - 1, StandardCharsets.UTF_8);
+            boolean accepted = method == CryptoChannel.UNLOCK_PIN
+                    ? RemoteAccessibilityService.submitKnownPin(credential)
+                    : method == CryptoChannel.UNLOCK_PATTERN &&
+                    RemoteAccessibilityService.submitKnownPattern(credential);
+            result = accepted
+                    ? CryptoChannel.UNLOCK_RESULT_ACCEPTED
+                    : CryptoChannel.UNLOCK_RESULT_UNSUPPORTED;
         } catch (Exception ignored) {
             result = CryptoChannel.UNLOCK_RESULT_UNSUPPORTED;
         }
+        return result;
+    }
+
+    private void handleUnlock(CryptoChannel c, byte[] p) {
+        byte result = evaluateUnlockRequest(p);
         try { c.send(CryptoChannel.TYPE_UNLOCK_RESULT, new byte[]{result}); }
         catch (Exception e) { closeChannel(c); }
         new Handler(Looper.getMainLooper()).postDelayed(this::sendHostStatus, 900);
