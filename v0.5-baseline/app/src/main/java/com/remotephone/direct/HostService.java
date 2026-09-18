@@ -83,12 +83,15 @@ public class HostService extends Service {
                 Intent data = (Intent) intent.getParcelableExtra(EXTRA_RESULT_DATA);
                 int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED);
                 if (data != null && resultCode == Activity.RESULT_OK) {
-                    startProjection(resultCode, data);
-                    startDisplayWatcher();
-                    startAudioCapture();
-                    try { ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).cancel(NOTIF + 1); }
-                    catch (Exception ignored) {}
-                    sendHostStatus();
+                    if (startProjection(resultCode, data)) {
+                        startDisplayWatcher();
+                        startAudioCapture();
+                        try { ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).cancel(NOTIF + 1); }
+                        catch (Exception ignored) {}
+                        sendHostStatus();
+                    } else {
+                        postNeedsApprovalNotification();
+                    }
                 }
             }
             ensureForegroundState();
@@ -127,11 +130,21 @@ public class HostService extends Service {
 
         HostRecoveryState.setDesiredRunning(this, true);
         running = true;
-        ensureForegroundState();
+        if (!ensureForegroundState(true)) {
+            running = false;
+            HostRecoveryState.setDesiredRunning(this, false);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         acquireCpuWakeLock();
         registerScreenStateReceiver();
         registerNetworkStateReceiver();
-        startProjection(resultCode, data);
+        if (!startProjection(resultCode, data)) {
+            running = false;
+            HostRecoveryState.setDesiredRunning(this, false);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         startDisplayWatcher();
         startAudioCapture();
         startLocalServer();
@@ -177,6 +190,15 @@ public class HostService extends Service {
     }
 
     private void ensureForegroundState() {
+        ensureForegroundState(projection != null);
+    }
+
+    /**
+     * Android requires the service to already be promoted with the
+     * MEDIA_PROJECTION foreground-service type before getMediaProjection().
+     * Recovery mode intentionally uses SPECIAL_USE on Android 14+ instead.
+     */
+    private boolean ensureForegroundState(boolean mediaProjectionMode) {
         try {
             createNotificationChannel();
             Intent open = new Intent(this, HostActivity.class);
@@ -184,7 +206,7 @@ public class HostService extends Service {
                     PendingIntent.FLAG_UPDATE_CURRENT |
                             (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0));
             String text;
-            if (running && projection == null)
+            if (!mediaProjectionMode)
                 text = "Host recovered; screen capture approval required";
             else if (remoteId != null && remoteId.length() == 9 && RelayConfig.isConfigured())
                 text = "Internet Remote ID: " + formatRemoteId(remoteId);
@@ -202,15 +224,24 @@ public class HostService extends Service {
                     .setOngoing(true)
                     .setOnlyAlertOnce(true);
             Notification notification = b.build();
-            if (Build.VERSION.SDK_INT >= 34) {
-                int type = projection == null
-                        ? ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-                        : ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
-                startForeground(NOTIF, notification, type);
+
+            if (Build.VERSION.SDK_INT >= 29) {
+                if (mediaProjectionMode) {
+                    startForeground(NOTIF, notification,
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
+                } else if (Build.VERSION.SDK_INT >= 34) {
+                    startForeground(NOTIF, notification,
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+                } else {
+                    startForeground(NOTIF, notification);
+                }
             } else {
                 startForeground(NOTIF, notification);
             }
-        } catch (Exception ignored) {}
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private void createNotificationChannel() {
@@ -337,17 +368,26 @@ public class HostService extends Service {
         } catch (Exception ignored) {}
     }
 
-    private void startProjection(int resultCode, Intent data) {
-        MediaProjectionManager m = (MediaProjectionManager)getSystemService(MEDIA_PROJECTION_SERVICE);
-        projection = m.getMediaProjection(resultCode, data);
-        recoveryViewAvailable = false;
-        projection.registerCallback(new MediaProjection.Callback() {
-            @Override public void onStop() { enterCaptureRecoveryMode(); }
-        }, new Handler(Looper.getMainLooper()));
-        if (encodeExecutor != null) encodeExecutor.shutdownNow();
-        encodeExecutor = Executors.newSingleThreadExecutor();
-        configureDisplayCapture();
-        ensureForegroundState();
+    private boolean startProjection(int resultCode, Intent data) {
+        if (!ensureForegroundState(true)) return false;
+        try {
+            MediaProjectionManager m = (MediaProjectionManager)getSystemService(MEDIA_PROJECTION_SERVICE);
+            projection = m.getMediaProjection(resultCode, data);
+            if (projection == null) return false;
+            recoveryViewAvailable = false;
+            projection.registerCallback(new MediaProjection.Callback() {
+                @Override public void onStop() { enterCaptureRecoveryMode(); }
+            }, new Handler(Looper.getMainLooper()));
+            if (encodeExecutor != null) encodeExecutor.shutdownNow();
+            encodeExecutor = Executors.newSingleThreadExecutor();
+            configureDisplayCapture();
+            ensureForegroundState(true);
+            return true;
+        } catch (Exception e) {
+            projection = null;
+            ensureForegroundState(false);
+            return false;
+        }
     }
 
     private synchronized void enterCaptureRecoveryMode() {
