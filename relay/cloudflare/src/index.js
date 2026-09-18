@@ -37,6 +37,8 @@ export class RelayRoom {
     this.env = env;
     this.host = null;
     this.controller = null;
+    this.hostControl = null;
+    this.controllerControl = null;
     this.hostMessages = 0;
     this.controllerMessages = 0;
     this.hostBytes = 0;
@@ -54,6 +56,8 @@ export class RelayRoom {
       return Response.json({
         hostOpen: isOpen(this.host),
         controllerOpen: isOpen(this.controller),
+        hostControlOpen: isOpen(this.hostControl),
+        controllerControlOpen: isOpen(this.controllerControl),
         hostMessages: this.hostMessages,
         controllerMessages: this.controllerMessages,
         hostBytes: this.hostBytes,
@@ -67,7 +71,8 @@ export class RelayRoom {
     }
 
     const role = (request.headers.get("X-RemotePhone-Role") || "").toLowerCase();
-    if (role !== "host" && role !== "controller") {
+    const validRoles = new Set(["host", "controller", "host-control", "controller-control"]);
+    if (!validRoles.has(role)) {
       return new Response("Missing role", { status: 400 });
     }
 
@@ -76,11 +81,18 @@ export class RelayRoom {
       lastRequestAt: Date.now(),
     });
 
-    if (role === "host") {
-      await this.bumpDiag("hostAttempts");
+    const isHostRole = role === "host" || role === "host-control";
+    const isControlRole = role === "host-control" || role === "controller-control";
+
+    if (isHostRole) {
+      await this.bumpDiag(isControlRole ? "hostControlAttempts" : "hostAttempts");
       const token = request.headers.get("X-RemotePhone-Host-Token") || "";
       if (token.length < 32) {
-        await this.updateDiag({ lastHostResult: "invalid-token", lastHostResultAt: Date.now() });
+        await this.updateDiag({
+          lastHostResult: "invalid-token",
+          lastHostResultAt: Date.now(),
+          lastHostRole: role,
+        });
         return new Response("Invalid Host token", { status: 401 });
       }
 
@@ -89,29 +101,51 @@ export class RelayRoom {
       if (!storedHash) {
         await this.state.storage.put("hostTokenHash", tokenHash);
       } else if (!timingSafeEqual(storedHash, tokenHash)) {
-        await this.updateDiag({ lastHostResult: "token-mismatch", lastHostResultAt: Date.now() });
+        await this.updateDiag({
+          lastHostResult: "token-mismatch",
+          lastHostResultAt: Date.now(),
+          lastHostRole: role,
+        });
         return new Response("Remote ID belongs to another Host", { status: 403 });
       }
 
-      if (isOpen(this.host)) {
-        try { this.host.close(1012, "Host reconnected"); } catch (_) {}
+      const existing = isControlRole ? this.hostControl : this.host;
+      if (isOpen(existing)) {
+        try { existing.close(1012, "Host reconnected"); } catch (_) {}
       }
-      this.host = null;
-      await this.updateDiag({ lastHostResult: "accepted", lastHostAcceptedAt: Date.now() });
-      return this.acceptSocket("host");
+      if (isControlRole) this.hostControl = null;
+      else this.host = null;
+      await this.updateDiag({
+        lastHostResult: "accepted",
+        lastHostAcceptedAt: Date.now(),
+        lastHostRole: role,
+      });
+      return this.acceptSocket(role);
     }
 
-    await this.bumpDiag("controllerAttempts");
-    if (!isOpen(this.host)) {
-      await this.updateDiag({ lastControllerResult: "host-offline", lastControllerResultAt: Date.now() });
+    await this.bumpDiag(isControlRole ? "controllerControlAttempts" : "controllerAttempts");
+    const hostPeer = isControlRole ? this.hostControl : this.host;
+    if (!isOpen(hostPeer)) {
+      await this.updateDiag({
+        lastControllerResult: "host-offline",
+        lastControllerResultAt: Date.now(),
+        lastControllerRole: role,
+      });
       return new Response("Host offline", { status: 404 });
     }
-    if (isOpen(this.controller)) {
-      try { this.controller.close(1012, "Controller reconnected"); } catch (_) {}
-      this.controller = null;
+
+    const existingController = isControlRole ? this.controllerControl : this.controller;
+    if (isOpen(existingController)) {
+      try { existingController.close(1012, "Controller reconnected"); } catch (_) {}
     }
-    await this.updateDiag({ lastControllerResult: "accepted", lastControllerAcceptedAt: Date.now() });
-    return this.acceptSocket("controller");
+    if (isControlRole) this.controllerControl = null;
+    else this.controller = null;
+    await this.updateDiag({
+      lastControllerResult: "accepted",
+      lastControllerAcceptedAt: Date.now(),
+      lastControllerRole: role,
+    });
+    return this.acceptSocket(role);
   }
 
   acceptSocket(role) {
@@ -123,16 +157,20 @@ export class RelayRoom {
     if (role === "host") {
       this.host = server;
       this.hostConnectedAt = Date.now();
-    } else {
+    } else if (role === "controller") {
       this.controller = server;
       this.controllerConnectedAt = Date.now();
+    } else if (role === "host-control") {
+      this.hostControl = server;
+    } else {
+      this.controllerControl = server;
     }
 
     server.addEventListener("message", event => {
       const now = Date.now();
       const size = messageSize(event.data);
       const type = messageType(event.data);
-      if (role === "host") {
+      if (role === "host" || role === "host-control") {
         this.hostMessages++;
         this.hostBytes += size;
         this.lastHostMessageAt = now;
@@ -142,9 +180,15 @@ export class RelayRoom {
         this.lastControllerMessageAt = now;
       }
 
-      // Hot path: forward immediately. Never serialize screen/control traffic behind
-      // Durable Object storage reads/writes; those made continuous video queue up.
-      const peerAtReceive = role === "host" ? this.controller : this.host;
+      // Hot path: forward immediately. Main screen traffic and lightweight
+      // control traffic use independent socket pairs.
+      const peerAtReceive = role === "host"
+        ? this.controller
+        : role === "controller"
+        ? this.host
+        : role === "host-control"
+        ? this.controllerControl
+        : this.hostControl;
       this.forwardMessageFast(role, event.data, size, type, server, peerAtReceive, now);
       this.persistTrafficDiagThrottled(role, size, type, now);
     });
@@ -167,6 +211,22 @@ export class RelayRoom {
           try { oldHost.close(1012, "Controller disconnected; reset session"); } catch (_) {}
           this.state.waitUntil(this.updateDiag({ lastHostResetForControllerAt: now }));
         }
+      } else if (role === "host-control" && this.hostControl === server) {
+        this.hostControl = null;
+        this.state.waitUntil(this.updateDiag({ lastHostControlClosedAt: now }));
+        if (isOpen(this.controllerControl)) {
+          try { this.controllerControl.close(1011, "Host control disconnected"); } catch (_) {}
+        }
+        this.controllerControl = null;
+      } else if (role === "controller-control" && this.controllerControl === server) {
+        this.controllerControl = null;
+        this.state.waitUntil(this.updateDiag({ lastControllerControlClosedAt: now }));
+        if (isOpen(this.hostControl)) {
+          const oldHostControl = this.hostControl;
+          this.hostControl = null;
+          try { oldHostControl.close(1012, "Controller control disconnected; reset session"); } catch (_) {}
+          this.state.waitUntil(this.updateDiag({ lastHostControlResetForControllerAt: now }));
+        }
       }
     };
 
@@ -177,8 +237,20 @@ export class RelayRoom {
   }
 
   forwardMessageFast(role, data, size, type, sourceAtReceive, peerAtReceive, forwardAt) {
-    const sourceNow = role === "host" ? this.host : this.controller;
-    const peerNow = role === "host" ? this.controller : this.host;
+    const sourceNow = role === "host"
+      ? this.host
+      : role === "controller"
+      ? this.controller
+      : role === "host-control"
+      ? this.hostControl
+      : this.controllerControl;
+    const peerNow = role === "host"
+      ? this.controller
+      : role === "controller"
+      ? this.host
+      : role === "host-control"
+      ? this.controllerControl
+      : this.hostControl;
     if (sourceNow !== sourceAtReceive || peerNow !== peerAtReceive) {
       this.state.waitUntil(this.updateDiag({
         lastForwardFrom: role,
@@ -207,8 +279,20 @@ export class RelayRoom {
         this.state.waitUntil((async () => {
           try {
             const payload = await data.arrayBuffer();
-            const sourceStill = role === "host" ? this.host : this.controller;
-            const peerStill = role === "host" ? this.controller : this.host;
+            const sourceStill = role === "host"
+              ? this.host
+              : role === "controller"
+              ? this.controller
+              : role === "host-control"
+              ? this.hostControl
+              : this.controllerControl;
+            const peerStill = role === "host"
+              ? this.controller
+              : role === "controller"
+              ? this.host
+              : role === "host-control"
+              ? this.controllerControl
+              : this.hostControl;
             if (sourceStill !== sourceAtReceive || peerStill !== peerAtReceive || !isOpen(peerAtReceive)) return;
             peerAtReceive.send(payload);
           } catch (e) {
