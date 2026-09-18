@@ -58,6 +58,9 @@ public class HostService extends Service {
     private volatile long lastFrameAt;
     private volatile long relayCongestedUntilElapsed;
     private volatile boolean cellularTransport;
+    private volatile int adaptiveStreamLevel;
+    private volatile double streamFreshnessEwmaMs = -1d;
+    private volatile int streamFreshnessGoodSamples;
     private volatile int physicalWidth, physicalHeight, streamWidth, streamHeight, streamDensity;
     private PowerManager.WakeLock cpuWakeLock;
     private BroadcastReceiver screenReceiver;
@@ -303,6 +306,9 @@ public class HostService extends Service {
             @Override public void onReceive(Context context, Intent intent) {
                 updateNetworkTransportMode();
                 relayCongestedUntilElapsed = 0L;
+                adaptiveStreamLevel = cellularTransport ? 2 : 0;
+                streamFreshnessEwmaMs = -1d;
+                streamFreshnessGoodSamples = 0;
                 if (!running || !RelayConfig.isConfigured()) return;
                 RelaySocket rs = relaySocket;
                 if (rs != null) rs.close();
@@ -336,10 +342,58 @@ public class HostService extends Service {
         }
     }
 
+    private int effectiveStreamLevel() {
+        int level = adaptiveStreamLevel;
+        if (cellularTransport) level = Math.max(level, 1);
+        if (SystemClock.elapsedRealtime() < relayCongestedUntilElapsed)
+            level = Math.max(level, 3);
+        return Math.max(0, Math.min(3, level));
+    }
+
     private long targetFrameIntervalMs() {
-        long now = SystemClock.elapsedRealtime();
-        if (now < relayCongestedUntilElapsed) return 330L;
-        return cellularTransport ? 250L : 83L;
+        switch (effectiveStreamLevel()) {
+            case 3: return 500L;
+            case 2: return 250L;
+            case 1: return 160L;
+            default: return 83L;
+        }
+    }
+
+    private void handleStreamFeedback(byte[] payload) {
+        if (payload == null || payload.length < 8) return;
+        try {
+            DataInputStream d = new DataInputStream(new ByteArrayInputStream(payload));
+            long hostFrameTimestamp = d.readLong();
+            long ageMs = System.currentTimeMillis() - hostFrameTimestamp;
+            if (ageMs < 0L || ageMs > 60000L) return;
+
+            double previous = streamFreshnessEwmaMs;
+            streamFreshnessEwmaMs = previous < 0d
+                    ? ageMs
+                    : (previous * 0.65d) + (ageMs * 0.35d);
+            double age = streamFreshnessEwmaMs;
+
+            int target;
+            if (age >= 2000d) target = 3;
+            else if (age >= 900d) target = 2;
+            else if (age >= 450d) target = 1;
+            else target = 0;
+
+            if (target > adaptiveStreamLevel) {
+                // Controller sees stale video: reduce bandwidth immediately.
+                adaptiveStreamLevel = target;
+                streamFreshnessGoodSamples = 0;
+            } else if (target < adaptiveStreamLevel && age < 350d) {
+                // Restore quality gradually after several fresh frames.
+                streamFreshnessGoodSamples++;
+                if (streamFreshnessGoodSamples >= 3) {
+                    adaptiveStreamLevel = Math.max(target, adaptiveStreamLevel - 1);
+                    streamFreshnessGoodSamples = 0;
+                }
+            } else {
+                streamFreshnessGoodSamples = 0;
+            }
+        } catch (Exception ignored) {}
     }
 
     private String hostState() {
@@ -529,57 +583,58 @@ public class HostService extends Service {
             Bitmap frame = Bitmap.createBitmap(padded, 0, 0, w, h);
             if (frame != padded) padded.recycle();
 
-            long now = SystemClock.elapsedRealtime();
-            boolean congested = now < relayCongestedUntilElapsed;
-            boolean lowBandwidth = cellularTransport || congested;
+            int level = effectiveStreamLevel();
+            int outW;
+            int jpegQuality;
+            int byteBudget;
+            long queueBudget;
+            if (level >= 3) {
+                outW = Math.min(180, w);
+                jpegQuality = 10;
+                byteBudget = 9 * 1024;
+                queueBudget = 9L * 1024L;
+            } else if (level == 2) {
+                outW = Math.min(300, w);
+                jpegQuality = 22;
+                byteBudget = 18 * 1024;
+                queueBudget = 18L * 1024L;
+            } else if (level == 1) {
+                outW = Math.min(480, w);
+                jpegQuality = 32;
+                byteBudget = 32 * 1024;
+                queueBudget = 32L * 1024L;
+            } else {
+                outW = w;
+                jpegQuality = 45;
+                byteBudget = Integer.MAX_VALUE;
+                queueBudget = 48L * 1024L;
+            }
 
-            // JPEG snapshots are intentionally tiny on cellular. A single large
-            // WebSocket frame can otherwise occupy a weak uplink for several
-            // seconds even when subsequent stale frames are dropped.
-            int outW = congested ? Math.min(220, w) : cellularTransport ? Math.min(300, w) : w;
             int outH = Math.max(2, (int)Math.round((double)h * outW / Math.max(1, w)));
             if ((outH & 1) == 1) outH--;
-            int jpegQuality = congested ? 16 : cellularTransport ? 24 : 45;
-            int byteBudget = congested ? 12 * 1024 : cellularTransport ? 20 * 1024 : Integer.MAX_VALUE;
 
             Bitmap output = frame;
             if (outW != w || outH != h)
                 output = Bitmap.createScaledBitmap(frame, outW, outH, true);
 
-            ByteArrayOutputStream jpg = new ByteArrayOutputStream(lowBandwidth ? 24_000 : 96_000);
+            ByteArrayOutputStream jpg = new ByteArrayOutputStream(level > 0 ? 32_000 : 96_000);
             output.compress(Bitmap.CompressFormat.JPEG, jpegQuality, jpg);
             byte[] jpeg = jpg.toByteArray();
 
-            if (lowBandwidth && jpeg.length > byteBudget) {
-                // First reduce JPEG quality without changing dimensions.
+            if (level > 0 && jpeg.length > byteBudget) {
                 jpg.reset();
-                output.compress(Bitmap.CompressFormat.JPEG, congested ? 10 : 16, jpg);
+                output.compress(Bitmap.CompressFormat.JPEG, Math.max(8, jpegQuality - 10), jpg);
                 jpeg = jpg.toByteArray();
-            }
-
-            if (lowBandwidth && jpeg.length > byteBudget) {
-                // Complex screens can still exceed the budget. Scale once more
-                // so one frame cannot create multi-second head-of-line blocking.
-                int tighterW = Math.min(congested ? 180 : 240, outW);
-                int tighterH = Math.max(2, (int)Math.round((double)outH * tighterW / Math.max(1, outW)));
-                if ((tighterH & 1) == 1) tighterH--;
-                Bitmap tighter = Bitmap.createScaledBitmap(output, tighterW, tighterH, true);
-                jpg.reset();
-                tighter.compress(Bitmap.CompressFormat.JPEG, 10, jpg);
-                jpeg = jpg.toByteArray();
-                tighter.recycle();
-                outW = tighterW;
-                outH = tighterH;
             }
 
             if (output != frame) output.recycle();
             frame.recycle();
 
+            long frameTimestamp = System.currentTimeMillis();
             ByteArrayOutputStream payload = new ByteArrayOutputStream(jpeg.length + 20);
             DataOutputStream d = new DataOutputStream(payload);
-            d.writeInt(outW); d.writeInt(outH); d.writeLong(System.currentTimeMillis()); d.writeInt(jpeg.length); d.write(jpeg); d.flush();
+            d.writeInt(outW); d.writeInt(outH); d.writeLong(frameTimestamp); d.writeInt(jpeg.length); d.write(jpeg); d.flush();
 
-            long queueBudget = congested ? 12L * 1024L : cellularTransport ? 20L * 1024L : 48L * 1024L;
             boolean sent = c.sendDroppable(
                     CryptoChannel.TYPE_FRAME, payload.toByteArray(), queueBudget);
             if (!sent)
@@ -819,6 +874,8 @@ public class HostService extends Service {
                                 current.send(CryptoChannel.TYPE_UNLOCK_RESULT, new byte[]{result});
                                 new Handler(Looper.getMainLooper()).postDelayed(
                                         HostService.this::sendHostStatus, 900);
+                            } else if (message.type == CryptoChannel.TYPE_STREAM_FEEDBACK) {
+                                handleStreamFeedback(message.payload);
                             }
                         } catch (Exception e) {
                             current.reset();
@@ -871,6 +928,7 @@ public class HostService extends Service {
             else if (m.type == CryptoChannel.TYPE_TEXT) handleText(m.payload);
             else if (m.type == CryptoChannel.TYPE_CONTROL) handleControl(m.payload);
             else if (m.type == CryptoChannel.TYPE_UNLOCK) handleUnlock(c, m.payload);
+            else if (m.type == CryptoChannel.TYPE_STREAM_FEEDBACK) handleStreamFeedback(m.payload);
             else if (m.type == CryptoChannel.TYPE_PING) c.send(CryptoChannel.TYPE_PING, new byte[0]);
         }
     }

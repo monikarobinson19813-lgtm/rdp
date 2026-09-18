@@ -37,11 +37,14 @@ public class ViewerActivity extends Activity {
     private volatile String activeControlHostId = "";
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final ExecutorService frameDecode = Executors.newSingleThreadExecutor();
+    private final ExecutorService streamFeedback = Executors.newSingleThreadExecutor();
     private final ScheduledExecutorService health = Executors.newSingleThreadScheduledExecutor();
     private final java.util.concurrent.atomic.AtomicReference<byte[]> latestFramePayload =
             new java.util.concurrent.atomic.AtomicReference<>();
     private final java.util.concurrent.atomic.AtomicBoolean frameDecodeScheduled =
             new java.util.concurrent.atomic.AtomicBoolean(false);
+    private volatile long latestRenderedHostFrameTimestamp;
+    private volatile long lastStreamFeedbackSentElapsed;
     private volatile boolean audioOn;
     private volatile boolean manualDisconnect;
     private volatile boolean destroyed;
@@ -543,6 +546,7 @@ public class ViewerActivity extends Activity {
     private void healthTick() {
         if (destroyed) return;
         pingHostStatusLinks();
+        sendStreamFeedbackIfDue();
         CryptoChannel ch = channel;
         if (ch == null) return;
         long now = SystemClock.elapsedRealtime();
@@ -592,6 +596,30 @@ public class ViewerActivity extends Activity {
         refreshHealthUi(ch);
     }
 
+    private void sendStreamFeedbackIfDue() {
+        long frameTimestamp = latestRenderedHostFrameTimestamp;
+        ControlLink ctl = controlLink;
+        if (frameTimestamp <= 0L || ctl == null || !ctl.isConnected()) return;
+
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastStreamFeedbackSentElapsed < 1000L) return;
+        lastStreamFeedbackSentElapsed = now;
+
+        try {
+            streamFeedback.execute(() -> {
+                try {
+                    ByteArrayOutputStream b = new ByteArrayOutputStream(8);
+                    DataOutputStream d = new DataOutputStream(b);
+                    d.writeLong(frameTimestamp);
+                    d.flush();
+                    ctl.send(CryptoChannel.TYPE_STREAM_FEEDBACK, b.toByteArray());
+                } catch (Exception e) {
+                    ctl.reset();
+                }
+            });
+        } catch (Exception ignored) {}
+    }
+
     private void handleHeartbeatResponse() {
         long now = SystemClock.elapsedRealtime();
         lastSeenElapsed = now;
@@ -610,6 +638,8 @@ public class ViewerActivity extends Activity {
         lastPingSentElapsed = 0;
         latencyMs = -1;
         pingOutstanding = false;
+        latestRenderedHostFrameTimestamp = 0L;
+        lastStreamFeedbackSentElapsed = 0L;
         lastFrameElapsed = now;
         lastHostState = "Host ready";
         videoStale = false;
@@ -647,6 +677,17 @@ public class ViewerActivity extends Activity {
             screen.setFrame(bmp);
             if (channel != null) setHostUiState(HostStateManager.State.RECOVERY_VIEW);
         });
+    }
+
+    private long extractFrameTimestamp(byte[] p) {
+        try {
+            DataInputStream d = new DataInputStream(new ByteArrayInputStream(p));
+            d.readInt();
+            d.readInt();
+            return d.readLong();
+        } catch (Exception ignored) {
+            return 0L;
+        }
     }
 
     private Bitmap decodeFrameBitmap(byte[] p) {
@@ -690,9 +731,12 @@ public class ViewerActivity extends Activity {
 
                 // If several frames arrived while the previous JPEG was being
                 // decoded, only the newest payload survives in latestFramePayload.
+                long hostFrameTimestamp = extractFrameTimestamp(payload);
                 Bitmap bmp = decodeFrameBitmap(payload);
                 if (bmp == null) continue;
 
+                if (hostFrameTimestamp > 0L)
+                    latestRenderedHostFrameTimestamp = hostFrameTimestamp;
                 lastFrameElapsed = SystemClock.elapsedRealtime();
                 final boolean wasStale = videoStale;
                 videoStale = false;
@@ -880,6 +924,7 @@ public class ViewerActivity extends Activity {
         stopAudioPlayback();
         latestFramePayload.set(null);
         frameDecode.shutdownNow();
+        streamFeedback.shutdownNow();
         io.shutdownNow();
         health.shutdownNow();
         super.onDestroy();
