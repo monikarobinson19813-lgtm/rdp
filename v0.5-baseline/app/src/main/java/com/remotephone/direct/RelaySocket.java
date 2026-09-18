@@ -45,7 +45,29 @@ public final class RelaySocket extends Socket {
                     throw new IOException("Relay send failed");
             }
 
-            @Override public void flush() {}
+            @Override public void flush() throws IOException {
+                WebSocket ws = webSocket;
+                if (ws == null) throw new EOFException("Relay socket closed");
+
+                // OkHttp WebSocket.send() queues bytes asynchronously. Without
+                // backpressure, video frames can build up for several seconds and
+                // the Controller displays stale frames. Hold the producer here so
+                // HostService's encodeBusy/latest-image logic naturally drops old
+                // frames instead of growing the WebSocket queue.
+                final long maxQueuedBytes = 128L * 1024L;
+                final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (!closed.get() && ws.queueSize() > maxQueuedBytes) {
+                    if (System.nanoTime() >= deadline)
+                        throw new IOException("Relay send queue stalled");
+                    try {
+                        Thread.sleep(5L);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException("Interrupted waiting for relay send queue", e);
+                    }
+                }
+                if (closed.get()) throw new EOFException("Relay socket closed");
+            }
 
             @Override public void close() { RelaySocket.this.close(); }
         };
