@@ -59,6 +59,7 @@ public class HostService extends Service {
     private volatile long relayCongestedUntilElapsed;
     private volatile boolean cellularTransport;
     private volatile int adaptiveStreamLevel;
+    private volatile byte manualStreamQuality = CryptoChannel.STREAM_QUALITY_AUTO;
     private volatile double streamFreshnessEwmaMs = -1d;
     private volatile int streamFreshnessGoodSamples;
     private volatile int physicalWidth, physicalHeight, streamWidth, streamHeight, streamDensity;
@@ -351,12 +352,24 @@ public class HostService extends Service {
     }
 
     private long targetFrameIntervalMs() {
+        if (manualStreamQuality == CryptoChannel.STREAM_QUALITY_DATA_SAVER) return 300L;
+        if (manualStreamQuality == CryptoChannel.STREAM_QUALITY_SD) return 150L;
+        if (manualStreamQuality == CryptoChannel.STREAM_QUALITY_HD) return 100L;
         switch (effectiveStreamLevel()) {
             case 3: return 500L;
             case 2: return 250L;
             case 1: return 160L;
             default: return 83L;
         }
+    }
+
+    private void handleStreamQuality(byte[] payload) {
+        if (payload == null || payload.length < 1) return;
+        byte mode = payload[0];
+        if (mode < CryptoChannel.STREAM_QUALITY_AUTO ||
+                mode > CryptoChannel.STREAM_QUALITY_HD) return;
+        manualStreamQuality = mode;
+        relayCongestedUntilElapsed = 0L;
     }
 
     private void handleStreamFeedback(byte[] payload) {
@@ -588,7 +601,26 @@ public class HostService extends Service {
             int jpegQuality;
             int byteBudget;
             long queueBudget;
-            if (level >= 3) {
+
+            if (manualStreamQuality == CryptoChannel.STREAM_QUALITY_DATA_SAVER) {
+                outW = Math.min(320, w);
+                jpegQuality = 26;
+                byteBudget = 22 * 1024;
+                queueBudget = 22L * 1024L;
+                level = 1;
+            } else if (manualStreamQuality == CryptoChannel.STREAM_QUALITY_SD) {
+                outW = Math.min(480, w);
+                jpegQuality = 38;
+                byteBudget = 42 * 1024;
+                queueBudget = 42L * 1024L;
+                level = 1;
+            } else if (manualStreamQuality == CryptoChannel.STREAM_QUALITY_HD) {
+                outW = w;
+                jpegQuality = 50;
+                byteBudget = Integer.MAX_VALUE;
+                queueBudget = 64L * 1024L;
+                level = 0;
+            } else if (level >= 3) {
                 outW = Math.min(240, w);
                 jpegQuality = 16;
                 byteBudget = 14 * 1024;
@@ -876,6 +908,8 @@ public class HostService extends Service {
                                         HostService.this::sendHostStatus, 900);
                             } else if (message.type == CryptoChannel.TYPE_STREAM_FEEDBACK) {
                                 handleStreamFeedback(message.payload);
+                            } else if (message.type == CryptoChannel.TYPE_STREAM_QUALITY) {
+                                handleStreamQuality(message.payload);
                             }
                         } catch (Exception e) {
                             current.reset();
@@ -929,6 +963,7 @@ public class HostService extends Service {
             else if (m.type == CryptoChannel.TYPE_CONTROL) handleControl(m.payload);
             else if (m.type == CryptoChannel.TYPE_UNLOCK) handleUnlock(c, m.payload);
             else if (m.type == CryptoChannel.TYPE_STREAM_FEEDBACK) handleStreamFeedback(m.payload);
+            else if (m.type == CryptoChannel.TYPE_STREAM_QUALITY) handleStreamQuality(m.payload);
             else if (m.type == CryptoChannel.TYPE_PING) c.send(CryptoChannel.TYPE_PING, new byte[0]);
         }
     }

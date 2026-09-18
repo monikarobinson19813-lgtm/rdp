@@ -24,6 +24,7 @@ public class ViewerActivity extends Activity {
     private EditText remoteId, friendlyName, address, code, textInput;
     private TextView status, remoteStatus, healthStatus;
     private TextView dashboardSummary;
+    private Button qualityButton;
     private RemoteScreenView screen;
     private WakeManager wakeManager;
     private LockScreenManager lockScreenManager;
@@ -35,6 +36,7 @@ public class ViewerActivity extends Activity {
     private final java.util.concurrent.ConcurrentHashMap<String, String> hostStatusById = new java.util.concurrent.ConcurrentHashMap<>();
     private volatile long lastHostStatusPingElapsed;
     private volatile String activeControlHostId = "";
+    private volatile byte streamQualityMode = CryptoChannel.STREAM_QUALITY_AUTO;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final ExecutorService frameDecode = Executors.newSingleThreadExecutor();
     private final ExecutorService streamFeedback = Executors.newSingleThreadExecutor();
@@ -157,10 +159,12 @@ public class ViewerActivity extends Activity {
         nav.setOrientation(LinearLayout.HORIZONTAL);
         nav.setGravity(Gravity.CENTER);
         Button back = b("◀"), home = b("●"), recent = b("■"), fit = b("FIT");
+        qualityButton = b("☰ AUTO");
         nav.addView(back, new LinearLayout.LayoutParams(0, -2, 1));
         nav.addView(home, new LinearLayout.LayoutParams(0, -2, 1));
         nav.addView(recent, new LinearLayout.LayoutParams(0, -2, 1));
         nav.addView(fit, new LinearLayout.LayoutParams(0, -2, 1));
+        nav.addView(qualityButton, new LinearLayout.LayoutParams(0, -2, 1));
         remotePanel.addView(nav);
 
         LinearLayout controls = new LinearLayout(this);
@@ -265,6 +269,7 @@ public class ViewerActivity extends Activity {
             fit.setText(next ? "FIT" : "FILL");
             Toast.makeText(this, next ? "Fill Controller screen" : "Fit entire Host screen", Toast.LENGTH_SHORT).show();
         });
+        qualityButton.setOnClickListener(v -> showQualityMenu(qualityButton));
         screen.setGestureSink(this::sendGesture);
         refreshHosts();
         health.scheduleAtFixedRate(this::healthTick, 1, 1, TimeUnit.SECONDS);
@@ -390,6 +395,8 @@ public class ViewerActivity extends Activity {
         saveCurrentHost();
         stopHostStatusLink(id);
         activeControlHostId = id;
+        streamQualityMode = loadStreamQuality(id);
+        updateQualityButton();
         manualDisconnect = false;
         status.setText(localAddress.isEmpty() ? "Finding Host by Remote ID…" : "Connecting to Host locally…");
         if (localAddress.isEmpty()) {
@@ -399,6 +406,7 @@ public class ViewerActivity extends Activity {
                     new ControlLink.Listener() {
                         @Override public void onConnected(String peerFingerprint) {
                             MyHosts.pinFingerprint(ViewerActivity.this, id, peerFingerprint);
+                            sendStreamQuality(streamQualityMode);
                         }
 
                         @Override public void onMessage(CryptoChannel.Message message) {
@@ -447,6 +455,7 @@ public class ViewerActivity extends Activity {
                 });
 
                 if (audioOn) sendControl(CryptoChannel.CONTROL_AUDIO_ON);
+                sendStreamQuality(streamQualityMode);
                 readSession(ch);
                 if (manualDisconnect || destroyed) break;
                 runOnUiThread(() -> {
@@ -797,6 +806,80 @@ public class ViewerActivity extends Activity {
             try { t.flush(); } catch (Exception ignored) {}
             try { t.release(); } catch (Exception ignored) {}
         }
+    }
+
+    private void showQualityMenu(View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor);
+        menu.getMenu().add("Auto — adaptive").setOnMenuItemClickListener(item -> {
+            selectStreamQuality(CryptoChannel.STREAM_QUALITY_AUTO); return true;
+        });
+        menu.getMenu().add("Data Saver — fastest").setOnMenuItemClickListener(item -> {
+            selectStreamQuality(CryptoChannel.STREAM_QUALITY_DATA_SAVER); return true;
+        });
+        menu.getMenu().add("SD — readable / balanced").setOnMenuItemClickListener(item -> {
+            selectStreamQuality(CryptoChannel.STREAM_QUALITY_SD); return true;
+        });
+        menu.getMenu().add("HD — sharpest").setOnMenuItemClickListener(item -> {
+            selectStreamQuality(CryptoChannel.STREAM_QUALITY_HD); return true;
+        });
+        menu.show();
+    }
+
+    private void selectStreamQuality(byte mode) {
+        streamQualityMode = mode;
+        String id = activeControlHostId == null ? "" : activeControlHostId;
+        if (!id.isEmpty()) {
+            getSharedPreferences("remotephone_quality", MODE_PRIVATE)
+                    .edit().putInt("host_" + id, mode).apply();
+        }
+        updateQualityButton();
+        sendStreamQuality(mode);
+        String name = qualityLabel(mode);
+        Toast.makeText(this, "Stream quality: " + name, Toast.LENGTH_SHORT).show();
+    }
+
+    private byte loadStreamQuality(String id) {
+        int value = getSharedPreferences("remotephone_quality", MODE_PRIVATE)
+                .getInt("host_" + id, CryptoChannel.STREAM_QUALITY_AUTO);
+        if (value < CryptoChannel.STREAM_QUALITY_AUTO || value > CryptoChannel.STREAM_QUALITY_HD)
+            value = CryptoChannel.STREAM_QUALITY_AUTO;
+        return (byte)value;
+    }
+
+    private String qualityLabel(byte mode) {
+        if (mode == CryptoChannel.STREAM_QUALITY_DATA_SAVER) return "DATA";
+        if (mode == CryptoChannel.STREAM_QUALITY_SD) return "SD";
+        if (mode == CryptoChannel.STREAM_QUALITY_HD) return "HD";
+        return "AUTO";
+    }
+
+    private void updateQualityButton() {
+        runOnUiThread(() -> {
+            if (qualityButton != null)
+                qualityButton.setText("☰ " + qualityLabel(streamQualityMode));
+        });
+    }
+
+    private void sendStreamQuality(byte mode) {
+        ControlLink ctl = controlLink;
+        if (ctl != null && ctl.isConnected()) {
+            new Thread(() -> {
+                try {
+                    ctl.send(CryptoChannel.TYPE_STREAM_QUALITY, new byte[]{mode});
+                } catch (Exception e) {
+                    ctl.reset();
+                    CryptoChannel fallback = channel;
+                    if (fallback != null) {
+                        try { fallback.send(CryptoChannel.TYPE_STREAM_QUALITY, new byte[]{mode}); }
+                        catch (Exception ignored) { fallback.close(); }
+                    }
+                }
+            }, "remotephone-stream-quality").start();
+            return;
+        }
+        CryptoChannel ch = channel;
+        if (ch != null)
+            ioSend(() -> ch.send(CryptoChannel.TYPE_STREAM_QUALITY, new byte[]{mode}));
     }
 
     private void sendGesture(float x1, float y1, float x2, float y2, long duration) {
