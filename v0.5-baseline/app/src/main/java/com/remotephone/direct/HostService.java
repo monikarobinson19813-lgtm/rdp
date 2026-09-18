@@ -50,6 +50,7 @@ public class HostService extends Service {
     private ExecutorService acceptExecutor, relayExecutor, encodeExecutor, audioExecutor;
     private ScheduledExecutorService recoveryExecutor;
     private final AtomicBoolean relayLoopActive = new AtomicBoolean(false);
+    private final AtomicBoolean localSessionActive = new AtomicBoolean(false);
     private volatile ControlLink controlLink;
     private final AtomicBoolean encodeBusy = new AtomicBoolean(false);
     private final AtomicBoolean recoveryFrameBusy = new AtomicBoolean(false);
@@ -570,7 +571,14 @@ public class HostService extends Service {
                     CryptoChannel candidate = null;
                     try {
                         candidate = CryptoChannel.accept(s, pairingCode, hostIdentity);
-                        runSession(candidate);
+                        localSessionActive.set(true);
+                        CryptoChannel current = channel;
+                        if (current != null && current != candidate) current.close();
+                        try {
+                            runSession(candidate, true);
+                        } finally {
+                            localSessionActive.set(false);
+                        }
                     } catch (Exception e) {
                         if (candidate != null) candidate.close();
                         else try { s.close(); } catch(Exception ignored) {}
@@ -588,6 +596,10 @@ public class HostService extends Service {
             long retryDelayMs = 1000L;
             try {
                 while (running && RelayConfig.isConfigured()) {
+                    if (localSessionActive.get()) {
+                        sleepQuietly(400);
+                        continue;
+                    }
                     RelaySocket rs = null;
                     CryptoChannel candidate = null;
                     boolean sessionEstablished = false;
@@ -599,9 +611,14 @@ public class HostService extends Service {
                         if (previous != null && previous != rs) previous.close();
 
                         candidate = CryptoChannel.accept(rs, pairingCode, hostIdentity);
+                        if (localSessionActive.get()) {
+                            candidate.close();
+                            candidate = null;
+                            continue;
+                        }
                         sessionEstablished = true;
                         retryDelayMs = 1000L;
-                        runSession(candidate);
+                        runSession(candidate, false);
                     } catch (Exception ignored) {
                         // The loop below owns recovery; every failed transport is discarded.
                     } finally {
@@ -735,10 +752,14 @@ public class HostService extends Service {
         link.start();
     }
 
-    private void runSession(CryptoChannel candidate) throws Exception {
-        CryptoChannel old = channel;
-        channel = candidate;
-        if (old != null && old != candidate) old.close();
+    private void runSession(CryptoChannel candidate, boolean localTransport) throws Exception {
+        synchronized (this) {
+            if (!localTransport && localSessionActive.get())
+                throw new IOException("Local session active");
+            CryptoChannel old = channel;
+            channel = candidate;
+            if (old != null && old != candidate) old.close();
+        }
         audioEnabled = false;
         try {
             sendInfo(candidate);
@@ -746,7 +767,9 @@ public class HostService extends Service {
             if (projection == null) trySendRecoveryFrame();
             readCommands(candidate);
         } finally {
-            if (channel == candidate) channel = null;
+            synchronized (this) {
+                if (channel == candidate) channel = null;
+            }
             audioEnabled = false;
             candidate.close();
         }
