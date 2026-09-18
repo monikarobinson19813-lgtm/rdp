@@ -36,7 +36,12 @@ public class ViewerActivity extends Activity {
     private volatile long lastHostStatusPingElapsed;
     private volatile String activeControlHostId = "";
     private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private final ExecutorService frameDecode = Executors.newSingleThreadExecutor();
     private final ScheduledExecutorService health = Executors.newSingleThreadScheduledExecutor();
+    private final java.util.concurrent.atomic.AtomicReference<byte[]> latestFramePayload =
+            new java.util.concurrent.atomic.AtomicReference<>();
+    private final java.util.concurrent.atomic.AtomicBoolean frameDecodeScheduled =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
     private volatile boolean audioOn;
     private volatile boolean manualDisconnect;
     private volatile boolean destroyed;
@@ -659,15 +664,46 @@ public class ViewerActivity extends Activity {
     }
 
     private void handleFrame(byte[] p) {
+        if (p == null || p.length == 0 || destroyed) return;
+
+        // Never decode video on the socket-reader thread. On bursty cellular
+        // delivery that caused the Controller to process old JPEGs one-by-one,
+        // delaying both the visible screen and later protocol messages.
+        latestFramePayload.set(p);
+        scheduleLatestFrameDecode();
+    }
+
+    private void scheduleLatestFrameDecode() {
+        if (!frameDecodeScheduled.compareAndSet(false, true)) return;
         try {
-            Bitmap bmp = decodeFrameBitmap(p);
-            if (bmp != null) {
+            frameDecode.execute(this::drainLatestFrame);
+        } catch (Exception e) {
+            frameDecodeScheduled.set(false);
+        }
+    }
+
+    private void drainLatestFrame() {
+        try {
+            while (!destroyed) {
+                byte[] payload = latestFramePayload.getAndSet(null);
+                if (payload == null) break;
+
+                // If several frames arrived while the previous JPEG was being
+                // decoded, only the newest payload survives in latestFramePayload.
+                Bitmap bmp = decodeFrameBitmap(payload);
+                if (bmp == null) continue;
+
                 lastFrameElapsed = SystemClock.elapsedRealtime();
                 final boolean wasStale = videoStale;
                 videoStale = false;
                 runOnUiThread(() -> {
+                    if (destroyed) {
+                        try { bmp.recycle(); } catch (Exception ignored) {}
+                        return;
+                    }
                     screen.setFrame(bmp);
-                    if ((hostUiState == HostStateManager.State.CAPTURE_APPROVAL_REQUIRED || hostUiState == HostStateManager.State.RECOVERY_VIEW) && channel != null) {
+                    if ((hostUiState == HostStateManager.State.CAPTURE_APPROVAL_REQUIRED ||
+                            hostUiState == HostStateManager.State.RECOVERY_VIEW) && channel != null) {
                         lastHostState = "Host ready";
                         setHostUiState(HostStateManager.State.READY);
                     } else if (wasStale && channel != null) {
@@ -675,7 +711,11 @@ public class ViewerActivity extends Activity {
                     }
                 });
             }
-        } catch (Exception ignored) {}
+        } finally {
+            frameDecodeScheduled.set(false);
+            if (!destroyed && latestFramePayload.get() != null)
+                scheduleLatestFrameDecode();
+        }
     }
 
     private void handleAudio(byte[] p) {
@@ -838,6 +878,8 @@ public class ViewerActivity extends Activity {
         pingOutstanding = false;
         if (c != null) c.close();
         stopAudioPlayback();
+        latestFramePayload.set(null);
+        frameDecode.shutdownNow();
         io.shutdownNow();
         health.shutdownNow();
         super.onDestroy();
