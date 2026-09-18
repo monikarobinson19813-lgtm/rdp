@@ -45,8 +45,7 @@ export class RelayRoom {
     this.controllerConnectedAt = 0;
     this.lastHostMessageAt = 0;
     this.lastControllerMessageAt = 0;
-    this.hostForwardChain = Promise.resolve();
-    this.controllerForwardChain = Promise.resolve();
+    this.lastTrafficDiagPersistAt = 0;
   }
 
   async fetch(request) {
@@ -124,42 +123,30 @@ export class RelayRoom {
     if (role === "host") {
       this.host = server;
       this.hostConnectedAt = Date.now();
-      this.hostForwardChain = Promise.resolve();
     } else {
       this.controller = server;
       this.controllerConnectedAt = Date.now();
-      this.controllerForwardChain = Promise.resolve();
     }
 
     server.addEventListener("message", event => {
+      const now = Date.now();
       const size = messageSize(event.data);
       const type = messageType(event.data);
       if (role === "host") {
         this.hostMessages++;
         this.hostBytes += size;
-        this.lastHostMessageAt = Date.now();
-        this.state.waitUntil(this.updateDiag({
-          lastHostMessageAt: this.lastHostMessageAt,
-          lastHostMessageBytes: size,
-          lastHostMessageType: type,
-        }));
+        this.lastHostMessageAt = now;
       } else {
         this.controllerMessages++;
         this.controllerBytes += size;
-        this.lastControllerMessageAt = Date.now();
-        this.state.waitUntil(this.updateDiag({
-          lastControllerMessageAt: this.lastControllerMessageAt,
-          lastControllerMessageBytes: size,
-          lastControllerMessageType: type,
-        }));
+        this.lastControllerMessageAt = now;
       }
 
+      // Hot path: forward immediately. Never serialize screen/control traffic behind
+      // Durable Object storage reads/writes; those made continuous video queue up.
       const peerAtReceive = role === "host" ? this.controller : this.host;
-      const prior = role === "host" ? this.hostForwardChain : this.controllerForwardChain;
-      const next = prior.catch(() => {}).then(() => this.forwardMessage(role, event.data, size, type, server, peerAtReceive));
-      if (role === "host") this.hostForwardChain = next;
-      else this.controllerForwardChain = next;
-      this.state.waitUntil(next.catch(() => {}));
+      this.forwardMessageFast(role, event.data, size, type, server, peerAtReceive, now);
+      this.persistTrafficDiagThrottled(role, size, type, now);
     });
 
     const cleanup = () => {
@@ -189,53 +176,85 @@ export class RelayRoom {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  async forwardMessage(role, data, size, type, sourceAtReceive, peerAtReceive) {
+  forwardMessageFast(role, data, size, type, sourceAtReceive, peerAtReceive, forwardAt) {
     const sourceNow = role === "host" ? this.host : this.controller;
     const peerNow = role === "host" ? this.controller : this.host;
-    const forwardAt = Date.now();
     if (sourceNow !== sourceAtReceive || peerNow !== peerAtReceive) {
-      await this.updateDiag({
+      this.state.waitUntil(this.updateDiag({
         lastForwardFrom: role,
         lastForwardAt: forwardAt,
         lastForwardResult: "stale-session-dropped",
         lastForwardBytes: size,
         lastForwardType: type,
-      });
+      }));
       return;
     }
     if (!isOpen(peerAtReceive)) {
-      await this.updateDiag({
+      this.state.waitUntil(this.updateDiag({
         lastForwardFrom: role,
         lastForwardAt: forwardAt,
         lastForwardResult: "peer-not-open",
         lastForwardBytes: size,
         lastForwardType: type,
-      });
+      }));
       return;
     }
 
     try {
-      const payload = await normalizeWebSocketData(data);
-      peerAtReceive.send(payload);
-      await this.updateDiag({
-        lastForwardFrom: role,
-        lastForwardAt: forwardAt,
-        lastForwardResult: "sent",
-        lastForwardBytes: size,
-        lastForwardType: type,
-        lastForwardWireType: messageType(payload),
-        lastForwardError: "",
-      });
+      // Workers normally delivers binary WebSocket messages as ArrayBuffer, which
+      // can be forwarded synchronously. Blob is handled off the hot path.
+      if (typeof Blob !== "undefined" && data instanceof Blob) {
+        this.state.waitUntil((async () => {
+          try {
+            const payload = await data.arrayBuffer();
+            const sourceStill = role === "host" ? this.host : this.controller;
+            const peerStill = role === "host" ? this.controller : this.host;
+            if (sourceStill !== sourceAtReceive || peerStill !== peerAtReceive || !isOpen(peerAtReceive)) return;
+            peerAtReceive.send(payload);
+          } catch (e) {
+            await this.updateDiag({
+              lastForwardFrom: role,
+              lastForwardAt: Date.now(),
+              lastForwardResult: "send-error",
+              lastForwardBytes: size,
+              lastForwardType: type,
+              lastForwardError: safeError(e),
+            });
+          }
+        })());
+        return;
+      }
+
+      peerAtReceive.send(data);
     } catch (e) {
-      await this.updateDiag({
+      this.state.waitUntil(this.updateDiag({
         lastForwardFrom: role,
         lastForwardAt: forwardAt,
         lastForwardResult: "send-error",
         lastForwardBytes: size,
         lastForwardType: type,
         lastForwardError: safeError(e),
-      });
+      }));
     }
+  }
+
+  persistTrafficDiagThrottled(role, size, type, now) {
+    if (now - this.lastTrafficDiagPersistAt < 5000) return;
+    this.lastTrafficDiagPersistAt = now;
+    this.state.waitUntil(this.updateDiag({
+      lastForwardFrom: role,
+      lastForwardAt: now,
+      lastForwardResult: "sent",
+      lastForwardBytes: size,
+      lastForwardType: type,
+      hostMessages: this.hostMessages,
+      controllerMessages: this.controllerMessages,
+      hostBytes: this.hostBytes,
+      controllerBytes: this.controllerBytes,
+      lastHostMessageAt: this.lastHostMessageAt,
+      lastControllerMessageAt: this.lastControllerMessageAt,
+      lastForwardError: "",
+    }));
   }
 
   async updateDiag(patch) {
@@ -252,13 +271,6 @@ export class RelayRoom {
 
 function isOpen(ws) {
   return !!ws && ws.readyState === 1;
-}
-
-async function normalizeWebSocketData(data) {
-  if (typeof Blob !== "undefined" && data instanceof Blob) {
-    return await data.arrayBuffer();
-  }
-  return data;
 }
 
 function messageSize(data) {
