@@ -449,7 +449,14 @@ public class ViewerActivity extends Activity {
                 String message = safeMessage(e);
                 if (!everConnected) {
                     hostUiState = HostStateManager.State.OFFLINE;
-                    runOnUiThread(() -> status.setText("Connection failed: " + message));
+                    activeControlHostId = "";
+                    ControlLink failedCtl = controlLink;
+                    controlLink = null;
+                    if (failedCtl != null) failedCtl.close();
+                    runOnUiThread(() -> {
+                        status.setText("Connection failed: " + message);
+                        refreshHosts();
+                    });
                     break;
                 }
                 runOnUiThread(() -> {

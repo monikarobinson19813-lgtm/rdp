@@ -25,6 +25,7 @@ public class HostActivity extends Activity {
         pairingCode = HostConfig.getOrCreateSessionPin(this);
         deviceId = HostConfig.getOrCreateRemoteId(this);
         HostConfig.getOrCreateRelayToken(this);
+        HostConfig.prepareDirectBoot(this);
 
         ScrollView scroll = new ScrollView(this);
         LinearLayout root = new LinearLayout(this);

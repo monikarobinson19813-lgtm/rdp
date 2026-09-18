@@ -73,6 +73,11 @@ public final class ControlLink implements Closeable {
         return !closed && channel != null;
     }
 
+    public boolean isWorkerAlive() {
+        Thread t = worker;
+        return !closed && t != null && t.isAlive();
+    }
+
     public void send(byte type, byte[] payload) throws Exception {
         CryptoChannel c = channel;
         if (closed || c == null) throw new IOException("Control link is not connected");

@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.*;
 import android.content.*;
 import android.content.pm.PackageManager;
+import android.content.pm.ServiceInfo;
 import android.graphics.*;
 import android.hardware.display.*;
 import android.media.AudioAttributes;
@@ -27,6 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class HostService extends Service {
     public static final String ACTION_STOP = "com.remotephone.direct.STOP";
+    public static final String ACTION_RECOVER = "com.remotephone.direct.RECOVER";
     public static final String EXTRA_RESULT_CODE = "resultCode";
     public static final String EXTRA_RESULT_DATA = "resultData";
     public static final String EXTRA_CODE = "pairingCode";
@@ -42,11 +44,11 @@ public class HostService extends Service {
     private volatile CryptoChannel channel;
     private volatile String pairingCode;
     private volatile String remoteId;
+    private volatile String relayToken;
     private KeyPair hostIdentity;
-    private static final String RECOVERY_PREF = "remotephone_host_recovery";
-    private static final String KEY_DESIRED_RUNNING = "desired_running";
 
     private ExecutorService acceptExecutor, relayExecutor, encodeExecutor, audioExecutor;
+    private ScheduledExecutorService recoveryExecutor;
     private final AtomicBoolean relayLoopActive = new AtomicBoolean(false);
     private volatile ControlLink controlLink;
     private final AtomicBoolean encodeBusy = new AtomicBoolean(false);
@@ -70,7 +72,7 @@ public class HostService extends Service {
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
-            setHostDesiredRunning(false);
+            HostRecoveryState.setDesiredRunning(this, false);
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -89,10 +91,11 @@ public class HostService extends Service {
             }
             ensureForegroundState();
             acquireCpuWakeLock();
+            startRecoveryWatchdog();
             return START_STICKY;
         }
-        if (intent == null) {
-            if (!isHostDesiredRunning()) {
+        if (intent == null || ACTION_RECOVER.equals(intent.getAction())) {
+            if (!HostRecoveryState.shouldRun(this)) {
                 stopSelf();
                 return START_NOT_STICKY;
             }
@@ -106,6 +109,8 @@ public class HostService extends Service {
         remoteId = intent.getStringExtra("remotephone.remote_id");
         if (remoteId == null || remoteId.length() != 9)
             remoteId = HostConfig.getOrCreateRemoteId(this);
+        relayToken = HostConfig.getOrCreateRelayToken(this);
+        HostConfig.prepareDirectBoot(this);
 
         Intent data = (Intent) intent.getParcelableExtra(EXTRA_RESULT_DATA);
         int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED);
@@ -118,10 +123,9 @@ public class HostService extends Service {
             return START_NOT_STICKY;
         }
 
-        setHostDesiredRunning(true);
-        ensureForegroundState();
-
+        HostRecoveryState.setDesiredRunning(this, true);
         running = true;
+        ensureForegroundState();
         acquireCpuWakeLock();
         registerScreenStateReceiver();
         registerNetworkStateReceiver();
@@ -133,24 +137,19 @@ public class HostService extends Service {
             startRelayLoop();
             startControlLink();
         }
+        startRecoveryWatchdog();
         return START_STICKY;
     }
 
-    private boolean isHostDesiredRunning() {
-        return getSharedPreferences(RECOVERY_PREF, MODE_PRIVATE)
-                .getBoolean(KEY_DESIRED_RUNNING, false);
-    }
-
-    private void setHostDesiredRunning(boolean desired) {
-        getSharedPreferences(RECOVERY_PREF, MODE_PRIVATE)
-                .edit()
-                .putBoolean(KEY_DESIRED_RUNNING, desired)
-                .apply();
-    }
-
     private void recoverWithoutProjection() {
-        pairingCode = HostConfig.getOrCreateSessionPin(this);
-        remoteId = HostConfig.getOrCreateRemoteId(this);
+        pairingCode = HostConfig.getRecoverySessionPin(this);
+        remoteId = HostConfig.getRecoveryRemoteId(this);
+        relayToken = HostConfig.getRecoveryRelayToken(this);
+        if (pairingCode.length() != 6 || remoteId.length() != 9 || relayToken.length() < 64) {
+            postNeedsApprovalNotification();
+            stopSelf();
+            return;
+        }
         try {
             hostIdentity = HostIdentity.getOrCreate();
         } catch (Exception e) {
@@ -169,7 +168,9 @@ public class HostService extends Service {
             startRelayLoop();
             startControlLink();
         }
+        startRecoveryWatchdog();
         postNeedsApprovalNotification();
+        sendHostStatus();
     }
 
     private void ensureForegroundState() {
@@ -197,7 +198,15 @@ public class HostService extends Service {
                     .setContentIntent(pi)
                     .setOngoing(true)
                     .setOnlyAlertOnce(true);
-            startForeground(NOTIF, b.build());
+            Notification notification = b.build();
+            if (Build.VERSION.SDK_INT >= 34) {
+                int type = projection == null
+                        ? ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                        : ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
+                startForeground(NOTIF, notification, type);
+            } else {
+                startForeground(NOTIF, notification);
+            }
         } catch (Exception ignored) {}
     }
 
@@ -256,10 +265,11 @@ public class HostService extends Service {
             @Override public void onReceive(Context context, Intent intent) {
                 if (!running || !RelayConfig.isConfigured()) return;
                 RelaySocket rs = relaySocket;
-                if (rs == null) return;
-                rs.close();
+                if (rs != null) rs.close();
                 CryptoChannel c = channel;
                 if (c != null) c.close();
+                ControlLink ctl = controlLink;
+                if (ctl != null) ctl.reset();
             }
         };
         IntentFilter f = new IntentFilter(android.net.ConnectivityManager.CONNECTIVITY_ACTION);
@@ -272,7 +282,6 @@ public class HostService extends Service {
     }
 
     private String hostState() {
-        if (projection == null) return "Host needs capture approval";
         try {
             PowerManager pm = (PowerManager)getSystemService(POWER_SERVICE);
             if (!pm.isInteractive()) return "Host sleeping";
@@ -284,6 +293,7 @@ public class HostService extends Service {
                 if (deviceLocked) return "Host locked";
             }
         } catch (Exception ignored) {}
+        if (projection == null) return "Host needs capture approval";
         return "Host ready";
     }
 
@@ -318,10 +328,34 @@ public class HostService extends Service {
         MediaProjectionManager m = (MediaProjectionManager)getSystemService(MEDIA_PROJECTION_SERVICE);
         projection = m.getMediaProjection(resultCode, data);
         projection.registerCallback(new MediaProjection.Callback() {
-            @Override public void onStop() { stopSelf(); }
+            @Override public void onStop() { enterCaptureRecoveryMode(); }
         }, new Handler(Looper.getMainLooper()));
+        if (encodeExecutor != null) encodeExecutor.shutdownNow();
         encodeExecutor = Executors.newSingleThreadExecutor();
         configureDisplayCapture();
+        ensureForegroundState();
+    }
+
+    private synchronized void enterCaptureRecoveryMode() {
+        if (!running) return;
+        projection = null;
+        try { if (displayManager != null && displayListener != null) displayManager.unregisterDisplayListener(displayListener); } catch (Exception ignored) {}
+        displayListener = null;
+        displayManager = null;
+        try { if (audioRecord != null) { audioRecord.stop(); audioRecord.release(); } } catch (Exception ignored) {}
+        audioRecord = null;
+        if (audioExecutor != null) audioExecutor.shutdownNow();
+        audioExecutor = null;
+        try { if (virtualDisplay != null) virtualDisplay.release(); } catch (Exception ignored) {}
+        virtualDisplay = null;
+        try { if (reader != null) reader.close(); } catch (Exception ignored) {}
+        reader = null;
+        if (encodeExecutor != null) encodeExecutor.shutdownNow();
+        encodeExecutor = null;
+        physicalWidth = physicalHeight = streamWidth = streamHeight = streamDensity = 0;
+        ensureForegroundState();
+        postNeedsApprovalNotification();
+        sendHostStatus();
     }
 
     private synchronized void configureDisplayCapture() {
@@ -501,7 +535,7 @@ public class HostService extends Service {
                     CryptoChannel candidate = null;
                     boolean sessionEstablished = false;
                     try {
-                        rs = RelaySocket.connectHost(remoteId, HostConfig.getOrCreateRelayToken(this));
+                        rs = RelaySocket.connectHost(remoteId, relayToken);
                         if (!running) break;
                         RelaySocket previous = relaySocket;
                         relaySocket = rs;
@@ -531,12 +565,34 @@ public class HostService extends Service {
         });
     }
 
+    private void startRecoveryWatchdog() {
+        if (recoveryExecutor != null && !recoveryExecutor.isShutdown()) return;
+        recoveryExecutor = Executors.newSingleThreadScheduledExecutor();
+        recoveryExecutor.scheduleWithFixedDelay(() -> {
+            if (!running || !RelayConfig.isConfigured()) return;
+            try {
+                if (!relayLoopActive.get()) startRelayLoop();
+                ControlLink ctl = controlLink;
+                if (ctl == null || !ctl.isWorkerAlive()) {
+                    synchronized (HostService.this) {
+                        ctl = controlLink;
+                        if (ctl == null || !ctl.isWorkerAlive()) {
+                            if (ctl != null) ctl.close();
+                            controlLink = null;
+                            startControlLink();
+                        }
+                    }
+                }
+            } catch (Exception ignored) {}
+        }, 5, 10, TimeUnit.SECONDS);
+    }
+
     private synchronized void startControlLink() {
         if (!running || !RelayConfig.isConfigured() || controlLink != null) return;
         ControlLink link = ControlLink.forHost(
                 remoteId,
                 pairingCode,
-                HostConfig.getOrCreateRelayToken(this),
+                relayToken,
                 hostIdentity,
                 new ControlLink.Listener() {
                     @Override public void onConnected(String ignored) {
@@ -704,6 +760,7 @@ public class HostService extends Service {
         if (relayExecutor != null) relayExecutor.shutdownNow();
         if (encodeExecutor != null) encodeExecutor.shutdownNow();
         if (audioExecutor != null) audioExecutor.shutdownNow();
+        if (recoveryExecutor != null) recoveryExecutor.shutdownNow();
         super.onDestroy();
     }
 }
