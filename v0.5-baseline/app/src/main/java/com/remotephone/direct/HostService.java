@@ -56,6 +56,8 @@ public class HostService extends Service {
     private final AtomicBoolean recoveryFrameBusy = new AtomicBoolean(false);
     private volatile boolean recoveryViewAvailable;
     private volatile long lastFrameAt;
+    private volatile long relayCongestedUntilElapsed;
+    private volatile boolean cellularTransport;
     private volatile int physicalWidth, physicalHeight, streamWidth, streamHeight, streamDensity;
     private PowerManager.WakeLock cpuWakeLock;
     private BroadcastReceiver screenReceiver;
@@ -296,8 +298,11 @@ public class HostService extends Service {
 
     private void registerNetworkStateReceiver() {
         if (networkReceiver != null) return;
+        updateNetworkTransportMode();
         networkReceiver = new BroadcastReceiver() {
             @Override public void onReceive(Context context, Intent intent) {
+                updateNetworkTransportMode();
+                relayCongestedUntilElapsed = 0L;
                 if (!running || !RelayConfig.isConfigured()) return;
                 RelaySocket rs = relaySocket;
                 if (rs != null) rs.close();
@@ -314,6 +319,27 @@ public class HostService extends Service {
         } catch (Exception ignored) {
             networkReceiver = null;
         }
+    }
+
+    private void updateNetworkTransportMode() {
+        try {
+            android.net.ConnectivityManager cm =
+                    (android.net.ConnectivityManager)getSystemService(CONNECTIVITY_SERVICE);
+            android.net.Network network = cm == null ? null : cm.getActiveNetwork();
+            android.net.NetworkCapabilities caps =
+                    cm == null || network == null ? null : cm.getNetworkCapabilities(network);
+            cellularTransport = caps != null &&
+                    caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) &&
+                    !caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI);
+        } catch (Exception ignored) {
+            cellularTransport = false;
+        }
+    }
+
+    private long targetFrameIntervalMs() {
+        long now = SystemClock.elapsedRealtime();
+        if (now < relayCongestedUntilElapsed) return 250L;
+        return cellularTransport ? 180L : 83L;
     }
 
     private String hostState() {
@@ -442,7 +468,7 @@ public class HostService extends Service {
         reader = ImageReader.newInstance(captureW, captureH, PixelFormat.RGBA_8888, 2);
         reader.setOnImageAvailableListener(r -> {
             long now = SystemClock.elapsedRealtime();
-            if (now - lastFrameAt < 83 || !encodeBusy.compareAndSet(false, true)) {
+            if (now - lastFrameAt < targetFrameIntervalMs() || !encodeBusy.compareAndSet(false, true)) {
                 Image skip = r.acquireLatestImage();
                 if (skip != null) skip.close();
                 return;
@@ -502,16 +528,34 @@ public class HostService extends Service {
             padded.copyPixelsFromBuffer(buf);
             Bitmap frame = Bitmap.createBitmap(padded, 0, 0, w, h);
             if (frame != padded) padded.recycle();
-            ByteArrayOutputStream jpg = new ByteArrayOutputStream(120_000);
-            frame.compress(Bitmap.CompressFormat.JPEG, 45, jpg);
+
+            long now = SystemClock.elapsedRealtime();
+            boolean congested = now < relayCongestedUntilElapsed;
+            int outW = congested ? Math.min(360, w) : cellularTransport ? Math.min(480, w) : w;
+            int outH = Math.max(2, (int)Math.round((double)h * outW / Math.max(1, w)));
+            if ((outH & 1) == 1) outH--;
+            int jpegQuality = congested ? 28 : cellularTransport ? 34 : 45;
+
+            Bitmap output = frame;
+            if (outW != w || outH != h)
+                output = Bitmap.createScaledBitmap(frame, outW, outH, true);
+
+            ByteArrayOutputStream jpg = new ByteArrayOutputStream(96_000);
+            output.compress(Bitmap.CompressFormat.JPEG, jpegQuality, jpg);
+            if (output != frame) output.recycle();
             frame.recycle();
+
             byte[] jpeg = jpg.toByteArray();
             ByteArrayOutputStream payload = new ByteArrayOutputStream(jpeg.length + 20);
             DataOutputStream d = new DataOutputStream(payload);
-            d.writeInt(w); d.writeInt(h); d.writeLong(System.currentTimeMillis()); d.writeInt(jpeg.length); d.write(jpeg); d.flush();
-            // On slow/mobile links keep only the freshest screen state. Do not
-            // let old JPEG frames accumulate in OkHttp's WebSocket queue.
-            c.sendDroppable(CryptoChannel.TYPE_FRAME, payload.toByteArray(), 64L * 1024L);
+            d.writeInt(outW); d.writeInt(outH); d.writeLong(System.currentTimeMillis()); d.writeInt(jpeg.length); d.write(jpeg); d.flush();
+
+            // Keep latency bounded. When the relay is already queued, drop this
+            // stale frame and temporarily enter a lower-bandwidth recovery mode.
+            boolean sent = c.sendDroppable(
+                    CryptoChannel.TYPE_FRAME, payload.toByteArray(), 48L * 1024L);
+            if (!sent)
+                relayCongestedUntilElapsed = SystemClock.elapsedRealtime() + 5000L;
         } catch (Exception e) { closeChannel(c); }
     }
 
