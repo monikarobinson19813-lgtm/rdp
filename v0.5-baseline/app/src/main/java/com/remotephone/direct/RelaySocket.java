@@ -46,27 +46,11 @@ public final class RelaySocket extends Socket {
             }
 
             @Override public void flush() throws IOException {
-                WebSocket ws = webSocket;
-                if (ws == null) throw new EOFException("Relay socket closed");
-
-                // OkHttp WebSocket.send() queues bytes asynchronously. Without
-                // backpressure, video frames can build up for several seconds and
-                // the Controller displays stale frames. Hold the producer here so
-                // HostService's encodeBusy/latest-image logic naturally drops old
-                // frames instead of growing the WebSocket queue.
-                final long maxQueuedBytes = 128L * 1024L;
-                final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-                while (!closed.get() && ws.queueSize() > maxQueuedBytes) {
-                    if (System.nanoTime() >= deadline)
-                        throw new IOException("Relay send queue stalled");
-                    try {
-                        Thread.sleep(5L);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        throw new IOException("Interrupted waiting for relay send queue", e);
-                    }
-                }
-                if (closed.get()) throw new EOFException("Relay socket closed");
+                if (closed.get() || webSocket == null)
+                    throw new EOFException("Relay socket closed");
+                // WebSocket.send() is asynchronous. Bulk video backpressure is
+                // handled before enqueueing so congestion drops stale frames
+                // instead of blocking or tearing down the session.
             }
 
             @Override public void close() { RelaySocket.this.close(); }
@@ -170,6 +154,11 @@ public final class RelaySocket extends Socket {
         opened.countDown();
         try { incoming.close(); } catch (Exception ignored) {}
         try { input.close(); } catch (Exception ignored) {}
+    }
+
+    public long queuedBytes() {
+        WebSocket ws = webSocket;
+        return ws == null ? Long.MAX_VALUE : ws.queueSize();
     }
 
     @Override public boolean isClosed() { return closed.get(); }

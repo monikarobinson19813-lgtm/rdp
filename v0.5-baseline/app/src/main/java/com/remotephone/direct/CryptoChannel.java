@@ -178,6 +178,24 @@ public final class CryptoChannel implements Closeable {
     public String peerFingerprint() { return peerFingerprint; }
 
     public synchronized void send(byte type, byte[] payload) throws Exception {
+        sendLocked(type, payload);
+    }
+
+    /**
+     * Sends latency-sensitive bulk data only when the relay transport is not
+     * already backed up. Returning false means "drop this stale packet", not a
+     * connection failure.
+     */
+    public synchronized boolean sendDroppable(byte type, byte[] payload, long maxQueuedBytes) throws Exception {
+        if (socket instanceof RelaySocket &&
+                ((RelaySocket) socket).queuedBytes() > Math.max(0L, maxQueuedBytes)) {
+            return false;
+        }
+        sendLocked(type, payload);
+        return true;
+    }
+
+    private void sendLocked(byte type, byte[] payload) throws Exception {
         if (payload == null) payload = new byte[0];
         ByteArrayOutputStream plainBytes = new ByteArrayOutputStream(1 + payload.length);
         plainBytes.write(type); plainBytes.write(payload);

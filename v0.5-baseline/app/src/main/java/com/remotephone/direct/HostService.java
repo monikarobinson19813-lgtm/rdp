@@ -509,7 +509,9 @@ public class HostService extends Service {
             ByteArrayOutputStream payload = new ByteArrayOutputStream(jpeg.length + 20);
             DataOutputStream d = new DataOutputStream(payload);
             d.writeInt(w); d.writeInt(h); d.writeLong(System.currentTimeMillis()); d.writeInt(jpeg.length); d.write(jpeg); d.flush();
-            c.send(CryptoChannel.TYPE_FRAME, payload.toByteArray());
+            // On slow/mobile links keep only the freshest screen state. Do not
+            // let old JPEG frames accumulate in OkHttp's WebSocket queue.
+            c.sendDroppable(CryptoChannel.TYPE_FRAME, payload.toByteArray(), 64L * 1024L);
         } catch (Exception e) { closeChannel(c); }
     }
 
