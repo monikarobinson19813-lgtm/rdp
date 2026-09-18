@@ -3,14 +3,20 @@ package com.remotephone.direct;
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
 import android.app.KeyguardManager;
+import android.graphics.Bitmap;
+import android.graphics.ColorSpace;
 import android.graphics.Path;
 import android.graphics.Rect;
+import android.hardware.HardwareBuffer;
+import android.os.Build;
 import android.os.Bundle;
 import android.util.DisplayMetrics;
+import android.view.Display;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
+import java.io.ByteArrayOutputStream;
 import java.util.List;
 
 /**
@@ -37,6 +43,62 @@ public class RemoteAccessibilityService extends AccessibilityService {
 
     public static boolean isReady() {
         return instance != null;
+    }
+
+    public interface RecoveryFrameCallback {
+        void onFrame(int width, int height, byte[] jpeg);
+        void onFailure(int errorCode);
+    }
+
+    /**
+     * Emergency post-reboot view for Android 11+ when MediaProjection consent is
+     * unavailable. Secure windows remain blocked by Android.
+     */
+    public static boolean requestRecoveryFrame(RecoveryFrameCallback callback) {
+        RemoteAccessibilityService s = instance;
+        if (s == null || callback == null || Build.VERSION.SDK_INT < 30) return false;
+        try {
+            s.takeScreenshot(Display.DEFAULT_DISPLAY, s.getMainExecutor(),
+                    new AccessibilityService.TakeScreenshotCallback() {
+                        @Override public void onSuccess(AccessibilityService.ScreenshotResult result) {
+                            HardwareBuffer buffer = result.getHardwareBuffer();
+                            Bitmap hardware = null;
+                            Bitmap software = null;
+                            Bitmap output = null;
+                            try {
+                                ColorSpace colorSpace = result.getColorSpace();
+                                hardware = Bitmap.wrapHardwareBuffer(buffer, colorSpace);
+                                if (hardware == null) throw new IllegalStateException("Screenshot bitmap unavailable");
+                                software = hardware.copy(Bitmap.Config.ARGB_8888, false);
+                                if (software == null) throw new IllegalStateException("Screenshot copy unavailable");
+                                int outW = Math.min(720, software.getWidth());
+                                int outH = Math.max(2, (int)Math.round((double)software.getHeight() * outW / Math.max(1, software.getWidth())));
+                                if ((outH & 1) == 1) outH--;
+                                output = outW == software.getWidth() && outH == software.getHeight()
+                                        ? software
+                                        : Bitmap.createScaledBitmap(software, outW, outH, true);
+                                ByteArrayOutputStream jpeg = new ByteArrayOutputStream(120_000);
+                                if (!output.compress(Bitmap.CompressFormat.JPEG, 42, jpeg))
+                                    throw new IllegalStateException("Screenshot compression failed");
+                                callback.onFrame(output.getWidth(), output.getHeight(), jpeg.toByteArray());
+                            } catch (Exception e) {
+                                callback.onFailure(-1);
+                            } finally {
+                                try { if (output != null && output != software) output.recycle(); } catch (Exception ignored) {}
+                                try { if (software != null) software.recycle(); } catch (Exception ignored) {}
+                                try { if (hardware != null) hardware.recycle(); } catch (Exception ignored) {}
+                                try { if (buffer != null) buffer.close(); } catch (Exception ignored) {}
+                            }
+                        }
+
+                        @Override public void onFailure(int errorCode) {
+                            callback.onFailure(errorCode);
+                        }
+                    });
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     public static void global(int action) {

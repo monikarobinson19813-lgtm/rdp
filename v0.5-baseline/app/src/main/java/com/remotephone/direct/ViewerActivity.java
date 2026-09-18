@@ -494,6 +494,7 @@ public class ViewerActivity extends Activity {
             CryptoChannel.Message m = ch.read();
             lastSeenElapsed = SystemClock.elapsedRealtime();
             if (m.type == CryptoChannel.TYPE_FRAME) handleFrame(m.payload);
+            else if (m.type == CryptoChannel.TYPE_RECOVERY_FRAME) handleRecoveryFrame(m.payload);
             else if (m.type == CryptoChannel.TYPE_AUDIO) handleAudio(m.payload);
             else if (m.type == CryptoChannel.TYPE_STATUS) handleStatus(m.payload);
             else if (m.type == CryptoChannel.TYPE_UNLOCK_RESULT) handleUnlockResult(m.payload);
@@ -553,7 +554,7 @@ public class ViewerActivity extends Activity {
         }
         long frameAge = lastFrameElapsed > 0 ? now - lastFrameElapsed : 0;
         boolean hostAlive = lastSeenElapsed > 0 && now - lastSeenElapsed < VIDEO_STALE_MS;
-        boolean streamExpected = "Host ready".equals(lastHostState);
+        boolean streamExpected = "Host ready".equals(lastHostState) || "Host recovery view".equals(lastHostState);
         if (hostAlive && streamExpected && lastFrameElapsed > 0 && frameAge >= VIDEO_STALE_MS) {
             if (!videoStale) {
                 videoStale = true;
@@ -617,7 +618,7 @@ public class ViewerActivity extends Activity {
         else if (seenAgeSeconds <= 1) seenText = "Last seen now";
         else seenText = "Last seen " + seenAgeSeconds + "s ago";
         String frameText = "";
-        if ("Host ready".equals(lastHostState) && lastFrameElapsed > 0) {
+        if (("Host ready".equals(lastHostState) || "Host recovery view".equals(lastHostState)) && lastFrameElapsed > 0) {
             long frameAgeSeconds = Math.max(0, (now - lastFrameElapsed) / 1000);
             if (frameAgeSeconds <= 1) frameText = "  •  Frame now";
             else frameText = "  •  Frame " + frameAgeSeconds + "s ago";
@@ -629,22 +630,42 @@ public class ViewerActivity extends Activity {
         });
     }
 
-    private void handleFrame(byte[] p) {
+    private void handleRecoveryFrame(byte[] p) {
+        Bitmap bmp = decodeFrameBitmap(p);
+        if (bmp == null) return;
+        lastFrameElapsed = SystemClock.elapsedRealtime();
+        videoStale = false;
+        lastHostState = "Host recovery view";
+        runOnUiThread(() -> {
+            screen.setFrame(bmp);
+            if (channel != null) setHostUiState(HostStateManager.State.RECOVERY_VIEW);
+        });
+    }
+
+    private Bitmap decodeFrameBitmap(byte[] p) {
         try {
             DataInputStream d = new DataInputStream(new ByteArrayInputStream(p));
             d.readInt(); d.readInt(); d.readLong();
             int len = d.readInt();
-            if (len < 1 || len > p.length) return;
+            if (len < 1 || len > p.length) return null;
             byte[] jpg = new byte[len];
             d.readFully(jpg);
-            Bitmap bmp = BitmapFactory.decodeByteArray(jpg, 0, jpg.length);
+            return BitmapFactory.decodeByteArray(jpg, 0, jpg.length);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private void handleFrame(byte[] p) {
+        try {
+            Bitmap bmp = decodeFrameBitmap(p);
             if (bmp != null) {
                 lastFrameElapsed = SystemClock.elapsedRealtime();
                 final boolean wasStale = videoStale;
                 videoStale = false;
                 runOnUiThread(() -> {
                     screen.setFrame(bmp);
-                    if (hostUiState == HostStateManager.State.CAPTURE_APPROVAL_REQUIRED && channel != null) {
+                    if ((hostUiState == HostStateManager.State.CAPTURE_APPROVAL_REQUIRED || hostUiState == HostStateManager.State.RECOVERY_VIEW) && channel != null) {
                         lastHostState = "Host ready";
                         setHostUiState(HostStateManager.State.READY);
                     } else if (wasStale && channel != null) {

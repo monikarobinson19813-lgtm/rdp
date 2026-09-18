@@ -25,6 +25,7 @@ public final class CryptoChannel implements Closeable {
     public static final byte TYPE_STATUS = 9;
     public static final byte TYPE_UNLOCK = 10;
     public static final byte TYPE_UNLOCK_RESULT = 11;
+    public static final byte TYPE_RECOVERY_FRAME = 12;
 
     public static final byte NAV_BACK = 1;
     public static final byte NAV_HOME = 2;

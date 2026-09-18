@@ -13,6 +13,7 @@ public final class HostStateManager {
         SLEEPING,
         LOCKED,
         CAPTURE_APPROVAL_REQUIRED,
+        RECOVERY_VIEW,
         STREAM_UNAVAILABLE,
         RECONNECTING,
         OFFLINE
@@ -26,6 +27,7 @@ public final class HostStateManager {
         if ("Host locked".equals(raw)) return State.LOCKED;
         if ("Host needs capture approval".equals(raw))
             return State.CAPTURE_APPROVAL_REQUIRED;
+        if ("Host recovery view".equals(raw)) return State.RECOVERY_VIEW;
         return State.STREAM_UNAVAILABLE;
     }
 
@@ -47,6 +49,7 @@ public final class HostStateManager {
             case SLEEPING: return "Host sleeping";
             case LOCKED: return "Host locked";
             case CAPTURE_APPROVAL_REQUIRED: return "Host needs capture approval";
+            case RECOVERY_VIEW: return "Recovery view — full screen capture approval still required";
             case STREAM_UNAVAILABLE: return "Stream unavailable — Host still online";
             case RECONNECTING: return "Reconnecting to Host…";
             default: return "Host offline";
@@ -60,6 +63,7 @@ public final class HostStateManager {
             case SLEEPING: return "Sleeping";
             case LOCKED: return "Locked";
             case CAPTURE_APPROVAL_REQUIRED: return "Online — capture approval";
+            case RECOVERY_VIEW: return "Online — recovery view";
             case STREAM_UNAVAILABLE: return "Online — stream unavailable";
             case RECONNECTING: return "Reconnecting";
             default: return "Offline";

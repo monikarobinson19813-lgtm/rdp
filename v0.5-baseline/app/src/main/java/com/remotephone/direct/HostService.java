@@ -52,6 +52,8 @@ public class HostService extends Service {
     private final AtomicBoolean relayLoopActive = new AtomicBoolean(false);
     private volatile ControlLink controlLink;
     private final AtomicBoolean encodeBusy = new AtomicBoolean(false);
+    private final AtomicBoolean recoveryFrameBusy = new AtomicBoolean(false);
+    private volatile boolean recoveryViewAvailable;
     private volatile long lastFrameAt;
     private volatile int physicalWidth, physicalHeight, streamWidth, streamHeight, streamDensity;
     private PowerManager.WakeLock cpuWakeLock;
@@ -163,6 +165,7 @@ public class HostService extends Service {
         acquireCpuWakeLock();
         registerScreenStateReceiver();
         registerNetworkStateReceiver();
+        ensurePhysicalDisplayMetrics();
         startLocalServer();
         if (RelayConfig.isConfigured()) {
             startRelayLoop();
@@ -293,7 +296,7 @@ public class HostService extends Service {
                 if (deviceLocked) return "Host locked";
             }
         } catch (Exception ignored) {}
-        if (projection == null) return "Host needs capture approval";
+        if (projection == null) return recoveryViewAvailable ? "Host recovery view" : "Host needs capture approval";
         return "Host ready";
     }
 
@@ -324,9 +327,20 @@ public class HostService extends Service {
         new Handler(Looper.getMainLooper()).postDelayed(this::sendHostStatus, 700);
     }
 
+    private void ensurePhysicalDisplayMetrics() {
+        try {
+            WindowManager wm = (WindowManager)getSystemService(WINDOW_SERVICE);
+            DisplayMetrics dm = new DisplayMetrics();
+            wm.getDefaultDisplay().getRealMetrics(dm);
+            physicalWidth = dm.widthPixels;
+            physicalHeight = dm.heightPixels;
+        } catch (Exception ignored) {}
+    }
+
     private void startProjection(int resultCode, Intent data) {
         MediaProjectionManager m = (MediaProjectionManager)getSystemService(MEDIA_PROJECTION_SERVICE);
         projection = m.getMediaProjection(resultCode, data);
+        recoveryViewAvailable = false;
         projection.registerCallback(new MediaProjection.Callback() {
             @Override public void onStop() { enterCaptureRecoveryMode(); }
         }, new Handler(Looper.getMainLooper()));
@@ -339,6 +353,9 @@ public class HostService extends Service {
     private synchronized void enterCaptureRecoveryMode() {
         if (!running) return;
         projection = null;
+        recoveryViewAvailable = false;
+        recoveryFrameBusy.set(false);
+        ensurePhysicalDisplayMetrics();
         try { if (displayManager != null && displayListener != null) displayManager.unregisterDisplayListener(displayListener); } catch (Exception ignored) {}
         displayListener = null;
         displayManager = null;
@@ -572,6 +589,7 @@ public class HostService extends Service {
             if (!running || !RelayConfig.isConfigured()) return;
             try {
                 if (!relayLoopActive.get()) startRelayLoop();
+                if (projection == null) trySendRecoveryFrame();
                 ControlLink ctl = controlLink;
                 if (ctl == null || !ctl.isWorkerAlive()) {
                     synchronized (HostService.this) {
@@ -585,6 +603,62 @@ public class HostService extends Service {
                 }
             } catch (Exception ignored) {}
         }, 5, 10, TimeUnit.SECONDS);
+    }
+
+    private boolean canAttemptRecoveryView() {
+        if (Build.VERSION.SDK_INT < 30 || !RemoteAccessibilityService.isReady()) return false;
+        try {
+            PowerManager pm = (PowerManager)getSystemService(POWER_SERVICE);
+            if (pm != null && !pm.isInteractive()) return false;
+            KeyguardManager km = (KeyguardManager)getSystemService(KEYGUARD_SERVICE);
+            if (km != null) {
+                boolean locked = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? km.isDeviceLocked() : km.isKeyguardLocked();
+                if (locked) return false;
+            }
+        } catch (Exception ignored) { return false; }
+        return true;
+    }
+
+    private void trySendRecoveryFrame() {
+        CryptoChannel current = channel;
+        if (projection != null || current == null || !canAttemptRecoveryView()) return;
+        if (!recoveryFrameBusy.compareAndSet(false, true)) return;
+        ensurePhysicalDisplayMetrics();
+        boolean started = RemoteAccessibilityService.requestRecoveryFrame(
+                new RemoteAccessibilityService.RecoveryFrameCallback() {
+                    @Override public void onFrame(int width, int height, byte[] jpeg) {
+                        try {
+                            CryptoChannel active = channel;
+                            if (!running || projection != null || active == null || active != current) return;
+                            recoveryViewAvailable = true;
+                            sendHostStatus();
+                            sendRecoveryFrame(active, width, height, jpeg);
+                        } finally {
+                            recoveryFrameBusy.set(false);
+                        }
+                    }
+
+                    @Override public void onFailure(int errorCode) {
+                        recoveryFrameBusy.set(false);
+                    }
+                });
+        if (!started) recoveryFrameBusy.set(false);
+    }
+
+    private void sendRecoveryFrame(CryptoChannel c, int width, int height, byte[] jpeg) {
+        try {
+            ByteArrayOutputStream payload = new ByteArrayOutputStream(jpeg.length + 20);
+            DataOutputStream d = new DataOutputStream(payload);
+            d.writeInt(width);
+            d.writeInt(height);
+            d.writeLong(System.currentTimeMillis());
+            d.writeInt(jpeg.length);
+            d.write(jpeg);
+            d.flush();
+            c.send(CryptoChannel.TYPE_RECOVERY_FRAME, payload.toByteArray());
+        } catch (Exception e) {
+            closeChannel(c);
+        }
     }
 
     private synchronized void startControlLink() {
@@ -629,6 +703,7 @@ public class HostService extends Service {
         try {
             sendInfo(candidate);
             sendHostStatus();
+            if (projection == null) trySendRecoveryFrame();
             readCommands(candidate);
         } finally {
             if (channel == candidate) channel = null;
@@ -737,6 +812,8 @@ public class HostService extends Service {
     @Override public void onDestroy() {
         running = false;
         audioEnabled = false;
+        recoveryViewAvailable = false;
+        recoveryFrameBusy.set(false);
         CryptoChannel c = channel;
         channel = null;
         if (c != null) c.close();
