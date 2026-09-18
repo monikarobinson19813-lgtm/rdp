@@ -338,8 +338,8 @@ public class HostService extends Service {
 
     private long targetFrameIntervalMs() {
         long now = SystemClock.elapsedRealtime();
-        if (now < relayCongestedUntilElapsed) return 250L;
-        return cellularTransport ? 180L : 83L;
+        if (now < relayCongestedUntilElapsed) return 330L;
+        return cellularTransport ? 250L : 83L;
     }
 
     private String hostState() {
@@ -531,29 +531,57 @@ public class HostService extends Service {
 
             long now = SystemClock.elapsedRealtime();
             boolean congested = now < relayCongestedUntilElapsed;
-            int outW = congested ? Math.min(360, w) : cellularTransport ? Math.min(480, w) : w;
+            boolean lowBandwidth = cellularTransport || congested;
+
+            // JPEG snapshots are intentionally tiny on cellular. A single large
+            // WebSocket frame can otherwise occupy a weak uplink for several
+            // seconds even when subsequent stale frames are dropped.
+            int outW = congested ? Math.min(220, w) : cellularTransport ? Math.min(300, w) : w;
             int outH = Math.max(2, (int)Math.round((double)h * outW / Math.max(1, w)));
             if ((outH & 1) == 1) outH--;
-            int jpegQuality = congested ? 28 : cellularTransport ? 34 : 45;
+            int jpegQuality = congested ? 16 : cellularTransport ? 24 : 45;
+            int byteBudget = congested ? 12 * 1024 : cellularTransport ? 20 * 1024 : Integer.MAX_VALUE;
 
             Bitmap output = frame;
             if (outW != w || outH != h)
                 output = Bitmap.createScaledBitmap(frame, outW, outH, true);
 
-            ByteArrayOutputStream jpg = new ByteArrayOutputStream(96_000);
+            ByteArrayOutputStream jpg = new ByteArrayOutputStream(lowBandwidth ? 24_000 : 96_000);
             output.compress(Bitmap.CompressFormat.JPEG, jpegQuality, jpg);
+            byte[] jpeg = jpg.toByteArray();
+
+            if (lowBandwidth && jpeg.length > byteBudget) {
+                // First reduce JPEG quality without changing dimensions.
+                jpg.reset();
+                output.compress(Bitmap.CompressFormat.JPEG, congested ? 10 : 16, jpg);
+                jpeg = jpg.toByteArray();
+            }
+
+            if (lowBandwidth && jpeg.length > byteBudget) {
+                // Complex screens can still exceed the budget. Scale once more
+                // so one frame cannot create multi-second head-of-line blocking.
+                int tighterW = Math.min(congested ? 180 : 240, outW);
+                int tighterH = Math.max(2, (int)Math.round((double)outH * tighterW / Math.max(1, outW)));
+                if ((tighterH & 1) == 1) tighterH--;
+                Bitmap tighter = Bitmap.createScaledBitmap(output, tighterW, tighterH, true);
+                jpg.reset();
+                tighter.compress(Bitmap.CompressFormat.JPEG, 10, jpg);
+                jpeg = jpg.toByteArray();
+                tighter.recycle();
+                outW = tighterW;
+                outH = tighterH;
+            }
+
             if (output != frame) output.recycle();
             frame.recycle();
 
-            byte[] jpeg = jpg.toByteArray();
             ByteArrayOutputStream payload = new ByteArrayOutputStream(jpeg.length + 20);
             DataOutputStream d = new DataOutputStream(payload);
             d.writeInt(outW); d.writeInt(outH); d.writeLong(System.currentTimeMillis()); d.writeInt(jpeg.length); d.write(jpeg); d.flush();
 
-            // Keep latency bounded. When the relay is already queued, drop this
-            // stale frame and temporarily enter a lower-bandwidth recovery mode.
+            long queueBudget = congested ? 12L * 1024L : cellularTransport ? 20L * 1024L : 48L * 1024L;
             boolean sent = c.sendDroppable(
-                    CryptoChannel.TYPE_FRAME, payload.toByteArray(), 48L * 1024L);
+                    CryptoChannel.TYPE_FRAME, payload.toByteArray(), queueBudget);
             if (!sent)
                 relayCongestedUntilElapsed = SystemClock.elapsedRealtime() + 5000L;
         } catch (Exception e) { closeChannel(c); }
