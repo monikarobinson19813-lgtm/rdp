@@ -597,6 +597,7 @@ public class HostService extends Service {
             else if (m.type == CryptoChannel.TYPE_NAV) handleNav(m.payload);
             else if (m.type == CryptoChannel.TYPE_TEXT) handleText(m.payload);
             else if (m.type == CryptoChannel.TYPE_CONTROL) handleControl(m.payload);
+            else if (m.type == CryptoChannel.TYPE_UNLOCK) handleUnlock(c, m.payload);
             else if (m.type == CryptoChannel.TYPE_PING) c.send(CryptoChannel.TYPE_PING, new byte[0]);
         }
     }
@@ -628,6 +629,29 @@ public class HostService extends Service {
     private void handleText(byte[] p) {
         try { RemoteAccessibilityService.setFocusedText(new String(p, StandardCharsets.UTF_8)); }
         catch(Exception ignored) {}
+    }
+
+    private void handleUnlock(CryptoChannel c, byte[] p) {
+        byte result = CryptoChannel.UNLOCK_RESULT_BAD_REQUEST;
+        try {
+            KeyguardManager km = (KeyguardManager)getSystemService(KEYGUARD_SERVICE);
+            boolean locked = km != null && (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? km.isDeviceLocked() : km.isKeyguardLocked());
+            if (!locked) {
+                result = CryptoChannel.UNLOCK_RESULT_NOT_LOCKED;
+            } else if (p != null && p.length >= 2) {
+                byte method = p[0];
+                String credential = new String(p, 1, p.length - 1, StandardCharsets.UTF_8);
+                boolean accepted = method == CryptoChannel.UNLOCK_PIN
+                        ? RemoteAccessibilityService.submitKnownPin(credential)
+                        : method == CryptoChannel.UNLOCK_PATTERN && RemoteAccessibilityService.submitKnownPattern(credential);
+                result = accepted ? CryptoChannel.UNLOCK_RESULT_ACCEPTED : CryptoChannel.UNLOCK_RESULT_UNSUPPORTED;
+            }
+        } catch (Exception ignored) {
+            result = CryptoChannel.UNLOCK_RESULT_UNSUPPORTED;
+        }
+        try { c.send(CryptoChannel.TYPE_UNLOCK_RESULT, new byte[]{result}); }
+        catch (Exception e) { closeChannel(c); }
+        new Handler(Looper.getMainLooper()).postDelayed(this::sendHostStatus, 900);
     }
 
     private void closeChannel(CryptoChannel c) {

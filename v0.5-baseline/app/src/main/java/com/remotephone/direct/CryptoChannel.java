@@ -23,6 +23,8 @@ public final class CryptoChannel implements Closeable {
     public static final byte TYPE_AUDIO = 7;
     public static final byte TYPE_CONTROL = 8;
     public static final byte TYPE_STATUS = 9;
+    public static final byte TYPE_UNLOCK = 10;
+    public static final byte TYPE_UNLOCK_RESULT = 11;
 
     public static final byte NAV_BACK = 1;
     public static final byte NAV_HOME = 2;
@@ -31,6 +33,13 @@ public final class CryptoChannel implements Closeable {
     public static final byte CONTROL_WAKE = 1;
     public static final byte CONTROL_AUDIO_ON = 2;
     public static final byte CONTROL_AUDIO_OFF = 3;
+
+    public static final byte UNLOCK_PIN = 1;
+    public static final byte UNLOCK_PATTERN = 2;
+    public static final byte UNLOCK_RESULT_ACCEPTED = 1;
+    public static final byte UNLOCK_RESULT_UNSUPPORTED = 2;
+    public static final byte UNLOCK_RESULT_NOT_LOCKED = 3;
+    public static final byte UNLOCK_RESULT_BAD_REQUEST = 4;
 
     private static final byte TYPE_AUTH = 100;
     private static final byte TYPE_AUTH_OK = 101;

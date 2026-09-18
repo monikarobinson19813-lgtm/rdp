@@ -26,6 +26,9 @@ public class ViewerActivity extends Activity {
     private TextView dashboardSummary;
     private RemoteScreenView screen;
     private WakeManager wakeManager;
+    private LockScreenManager lockScreenManager;
+    private LinearLayout lockPanel;
+    private EditText unlockPin, unlockPattern;
     private volatile CryptoChannel channel;
     private volatile ControlLink controlLink;
     private final java.util.concurrent.ConcurrentHashMap<String, ControlLink> hostStatusLinks = new java.util.concurrent.ConcurrentHashMap<>();
@@ -161,6 +164,40 @@ public class ViewerActivity extends Activity {
         controls.addView(disconnect, new LinearLayout.LayoutParams(0, -2, 1));
         remotePanel.addView(controls);
 
+        lockPanel = new LinearLayout(this);
+        lockPanel.setOrientation(LinearLayout.VERTICAL);
+        lockPanel.setPadding(12, 8, 12, 8);
+        lockPanel.setVisibility(View.GONE);
+        TextView unlockHint = new TextView(this);
+        unlockHint.setText("Host is securely locked. Use the known device PIN or pattern only where Android exposes the lock controls. Credentials are never stored.");
+        unlockHint.setTextColor(0xFFFFFFFF);
+        unlockHint.setTextSize(12);
+        lockPanel.addView(unlockHint);
+        LinearLayout pinRow = new LinearLayout(this);
+        pinRow.setOrientation(LinearLayout.HORIZONTAL);
+        unlockPin = new EditText(this);
+        unlockPin.setHint("Host device PIN");
+        unlockPin.setTextColor(0xFFFFFFFF);
+        unlockPin.setHintTextColor(0xFFAAAAAA);
+        unlockPin.setSingleLine(true);
+        unlockPin.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        Button unlockPinButton = b("UNLOCK PIN");
+        pinRow.addView(unlockPin, new LinearLayout.LayoutParams(0, -2, 1f));
+        pinRow.addView(unlockPinButton, new LinearLayout.LayoutParams(-2, -2));
+        lockPanel.addView(pinRow);
+        LinearLayout patternRow = new LinearLayout(this);
+        patternRow.setOrientation(LinearLayout.HORIZONTAL);
+        unlockPattern = new EditText(this);
+        unlockPattern.setHint("Pattern e.g. 1-2-5-8");
+        unlockPattern.setTextColor(0xFFFFFFFF);
+        unlockPattern.setHintTextColor(0xFFAAAAAA);
+        unlockPattern.setSingleLine(true);
+        Button unlockPatternButton = b("UNLOCK PATTERN");
+        patternRow.addView(unlockPattern, new LinearLayout.LayoutParams(0, -2, 1f));
+        patternRow.addView(unlockPatternButton, new LinearLayout.LayoutParams(-2, -2));
+        lockPanel.addView(patternRow);
+        remotePanel.addView(lockPanel);
+
         LinearLayout type = new LinearLayout(this);
         type.setOrientation(LinearLayout.HORIZONTAL);
         textInput = new EditText(this);
@@ -179,6 +216,11 @@ public class ViewerActivity extends Activity {
                 message -> {
                     if (remoteStatus != null) remoteStatus.setText(message);
                 });
+        lockScreenManager = new LockScreenManager(
+                this::sendUnlockPayload,
+                message -> runOnUiThread(() -> {
+                    if (remoteStatus != null) remoteStatus.setText(message);
+                }));
 
         saveHost.setOnClickListener(v -> saveCurrentHost());
         advanced.setOnClickListener(v -> {
@@ -192,6 +234,16 @@ public class ViewerActivity extends Activity {
         home.setOnClickListener(v -> sendNav(CryptoChannel.NAV_HOME));
         recent.setOnClickListener(v -> sendNav(CryptoChannel.NAV_RECENTS));
         wake.setOnClickListener(v -> wakeManager.requestWake());
+        unlockPinButton.setOnClickListener(v -> {
+            LockScreenManager manager = lockScreenManager;
+            if (manager != null) manager.requestPin(unlockPin.getText().toString());
+            unlockPin.setText("");
+        });
+        unlockPatternButton.setOnClickListener(v -> {
+            LockScreenManager manager = lockScreenManager;
+            if (manager != null) manager.requestPattern(unlockPattern.getText().toString());
+            unlockPattern.setText("");
+        });
         audio.setOnClickListener(v -> {
             audioOn = !audioOn;
             audio.setText(audioOn ? "AUDIO ON" : "AUDIO OFF");
@@ -437,6 +489,7 @@ public class ViewerActivity extends Activity {
             if (m.type == CryptoChannel.TYPE_FRAME) handleFrame(m.payload);
             else if (m.type == CryptoChannel.TYPE_AUDIO) handleAudio(m.payload);
             else if (m.type == CryptoChannel.TYPE_STATUS) handleStatus(m.payload);
+            else if (m.type == CryptoChannel.TYPE_UNLOCK_RESULT) handleUnlockResult(m.payload);
             else if (m.type == CryptoChannel.TYPE_PING) handleHeartbeatResponse();
         }
     }
@@ -450,7 +503,17 @@ public class ViewerActivity extends Activity {
         final String text = HostStateManager.controllerLabel(state);
         runOnUiThread(() -> {
             if (remoteStatus != null) remoteStatus.setText(text);
+            if (lockPanel != null) lockPanel.setVisibility(state == HostStateManager.State.LOCKED ? View.VISIBLE : View.GONE);
+            if (state != HostStateManager.State.LOCKED) {
+                if (unlockPin != null) unlockPin.setText("");
+                if (unlockPattern != null) unlockPattern.setText("");
+            }
         });
+    }
+
+    private void handleUnlockResult(byte[] payload) {
+        LockScreenManager manager = lockScreenManager;
+        if (manager != null) manager.onResult(payload);
     }
 
     private void handleStatus(byte[] p) {
@@ -659,6 +722,23 @@ public class ViewerActivity extends Activity {
         CryptoChannel ch = channel;
         if (ch == null || t.isEmpty()) return;
         ioSend(() -> ch.send(CryptoChannel.TYPE_TEXT, t.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private void sendUnlockPayload(byte[] payload) {
+        CryptoChannel ch = channel;
+        if (ch == null) {
+            if (lockScreenManager != null) lockScreenManager.showTransportUnavailable();
+            return;
+        }
+        if (hostUiState != HostStateManager.State.LOCKED) {
+            if (lockScreenManager != null) lockScreenManager.showNotLocked();
+            return;
+        }
+        final byte[] packet = java.util.Arrays.copyOf(payload, payload.length);
+        ioSend(() -> {
+            try { ch.send(CryptoChannel.TYPE_UNLOCK, packet); }
+            finally { java.util.Arrays.fill(packet, (byte)0); }
+        });
     }
 
     private void ioSend(Throwing r) {

@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
 import android.app.KeyguardManager;
 import android.graphics.Path;
+import android.graphics.Rect;
 import android.os.Bundle;
 import android.util.DisplayMetrics;
 import android.view.WindowManager;
@@ -63,10 +64,55 @@ public class RemoteAccessibilityService extends AccessibilityService {
         } catch (Exception ignored) {}
     }
 
+    public static boolean submitKnownPin(String pin) {
+        RemoteAccessibilityService s = instance;
+        if (s == null || pin == null || pin.length() < 4 || pin.length() > 16) return false;
+        for (int i = 0; i < pin.length(); i++) if (!Character.isDigit(pin.charAt(i))) return false;
+        return submitUnlockCredential(s, pin);
+    }
+
+    /** Best-effort only; no blind coordinate guessing is used. */
+    public static boolean submitKnownPattern(String pattern) {
+        RemoteAccessibilityService s = instance;
+        if (s == null || pattern == null) return false;
+        String digits = pattern.replaceAll("[^1-9]", "");
+        if (digits.length() < 4 || digits.length() > 9) return false;
+        boolean[] used = new boolean[10];
+        for (int i = 0; i < digits.length(); i++) {
+            int n = digits.charAt(i) - '0';
+            if (used[n]) return false;
+            used[n] = true;
+        }
+        try {
+            AccessibilityNodeInfo root = s.getRootInActiveWindow();
+            AccessibilityNodeInfo patternNode = findPatternNode(root);
+            if (patternNode == null) return false;
+            Rect bounds = new Rect();
+            patternNode.getBoundsInScreen(bounds);
+            if (bounds.width() < 90 || bounds.height() < 90) return false;
+            float cellW = bounds.width() / 3f;
+            float cellH = bounds.height() / 3f;
+            Path path = new Path();
+            for (int i = 0; i < digits.length(); i++) {
+                int index = digits.charAt(i) - '1';
+                int row = index / 3;
+                int col = index % 3;
+                float x = bounds.left + (col + 0.5f) * cellW;
+                float y = bounds.top + (row + 0.5f) * cellH;
+                if (i == 0) path.moveTo(x, y); else path.lineTo(x, y);
+            }
+            long duration = Math.max(300L, digits.length() * 120L);
+            GestureDescription gesture = new GestureDescription.Builder()
+                    .addStroke(new GestureDescription.StrokeDescription(path, 0, duration))
+                    .build();
+            return s.dispatchGesture(gesture, null, null);
+        } catch (Exception ignored) { return false; }
+    }
+
     /**
      * Best-effort only. Android/OEM policy may hide or block secure keyguard nodes.
      * Supports editable password/PIN fields when exposed, and PIN keypads whose
-     * digit buttons are exposed to Accessibility. Pattern unlock is not handled.
+     * digit buttons are exposed to Accessibility.
      */
     private static boolean submitUnlockCredential(RemoteAccessibilityService s, String credential) {
         if (credential == null || credential.length() < 1 || credential.length() > 64) return false;
@@ -135,6 +181,18 @@ public class RemoteAccessibilityService extends AccessibilityService {
                 (d != null && label.equalsIgnoreCase(d.toString().trim()))) return node;
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo found = findNodeRecursive(node.getChild(i), label);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private static AccessibilityNodeInfo findPatternNode(AccessibilityNodeInfo node) {
+        if (node == null) return null;
+        String className = node.getClassName() == null ? "" : node.getClassName().toString().toLowerCase(java.util.Locale.US);
+        String viewId = node.getViewIdResourceName() == null ? "" : node.getViewIdResourceName().toLowerCase(java.util.Locale.US);
+        if (className.contains("lockpatternview") || viewId.contains("lockpatternview") || viewId.contains("lock_pattern_view")) return node;
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo found = findPatternNode(node.getChild(i));
             if (found != null) return found;
         }
         return null;
