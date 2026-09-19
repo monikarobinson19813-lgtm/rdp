@@ -449,7 +449,51 @@ public class HostService extends Service {
                     "RemotePhone:WakeHost");
             wl.acquire(5000);
         } catch (Exception ignored) {}
-        new Handler(Looper.getMainLooper()).postDelayed(this::sendHostStatus, 700);
+
+        // The first secure-keyguard surface often shows only the lock wallpaper/AOD.
+        // Reveal Android's normal credential UI after the display becomes interactive
+        // so the existing PIN/pattern path has real accessibility nodes to operate on.
+        Handler main = new Handler(Looper.getMainLooper());
+        main.postDelayed(() -> {
+            revealCredentialScreenIfLocked();
+            sendHostStatus();
+        }, 650L);
+        main.postDelayed(this::sendHostStatus, 1400L);
+    }
+
+    private boolean revealCredentialScreenIfLocked() {
+        if (!RemoteAccessibilityService.isReady()) return false;
+        try {
+            KeyguardManager km = (KeyguardManager)getSystemService(KEYGUARD_SERVICE);
+            boolean locked = km != null && (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                    ? km.isDeviceLocked()
+                    : km.isKeyguardLocked());
+            if (!locked) return false;
+
+            ensurePhysicalDisplayMetrics();
+            if (physicalWidth <= 0 || physicalHeight <= 0) return false;
+
+            float x = physicalWidth * 0.5f;
+            RemoteAccessibilityService.gesture(
+                    x, physicalHeight * 0.82f,
+                    x, physicalHeight * 0.26f,
+                    320L);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private void schedulePostUnlockRecovery() {
+        Handler main = new Handler(Looper.getMainLooper());
+        main.postDelayed(() -> {
+            sendHostStatus();
+            if (projection == null) trySendRecoveryFrame();
+        }, 700L);
+        main.postDelayed(() -> {
+            sendHostStatus();
+            if (projection == null) trySendRecoveryFrame();
+        }, 1500L);
     }
 
     private void ensurePhysicalDisplayMetrics() {
@@ -904,8 +948,7 @@ public class HostService extends Service {
                             } else if (message.type == CryptoChannel.TYPE_UNLOCK) {
                                 byte result = evaluateUnlockRequest(message.payload);
                                 current.send(CryptoChannel.TYPE_UNLOCK_RESULT, new byte[]{result});
-                                new Handler(Looper.getMainLooper()).postDelayed(
-                                        HostService.this::sendHostStatus, 900);
+                                schedulePostUnlockRecovery();
                             } else if (message.type == CryptoChannel.TYPE_STREAM_FEEDBACK) {
                                 handleStreamFeedback(message.payload);
                             } else if (message.type == CryptoChannel.TYPE_STREAM_QUALITY) {
@@ -1015,6 +1058,18 @@ public class HostService extends Service {
                     ? RemoteAccessibilityService.submitKnownPin(credential)
                     : method == CryptoChannel.UNLOCK_PATTERN &&
                     RemoteAccessibilityService.submitKnownPattern(credential);
+
+            // A wake can leave Android on the first lock-screen surface where the
+            // keypad/pattern view is not yet exposed. Reveal it once, allow the
+            // keyguard UI to settle, then retry the exact same known credential.
+            if (!accepted && revealCredentialScreenIfLocked()) {
+                sleepQuietly(450L);
+                accepted = method == CryptoChannel.UNLOCK_PIN
+                        ? RemoteAccessibilityService.submitKnownPin(credential)
+                        : method == CryptoChannel.UNLOCK_PATTERN &&
+                        RemoteAccessibilityService.submitKnownPattern(credential);
+            }
+
             result = accepted
                     ? CryptoChannel.UNLOCK_RESULT_ACCEPTED
                     : CryptoChannel.UNLOCK_RESULT_UNSUPPORTED;
@@ -1028,7 +1083,7 @@ public class HostService extends Service {
         byte result = evaluateUnlockRequest(p);
         try { c.send(CryptoChannel.TYPE_UNLOCK_RESULT, new byte[]{result}); }
         catch (Exception e) { closeChannel(c); }
-        new Handler(Looper.getMainLooper()).postDelayed(this::sendHostStatus, 900);
+        schedulePostUnlockRecovery();
     }
 
     private void closeChannel(CryptoChannel c) {
