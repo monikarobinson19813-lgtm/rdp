@@ -23,6 +23,9 @@ import java.net.*;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -35,6 +38,11 @@ public class HostService extends Service {
     private static final int PORT = 49200;
     private static final int NOTIF = 22;
     private static volatile boolean running;
+    private static final int MAX_UNLOCK_DISPATCHES = 3;
+    private static final long UNLOCK_COOLDOWN_MS = 400L;
+    private static final String UNLOCK_GUARD_PREFS = "remotephone_unlock_guard";
+    private static final String UNLOCK_COUNT_KEY = "dispatch_count";
+    private static final String UNLOCK_LAST_AT_KEY = "last_dispatch_at";
 
     private MediaProjection projection;
     private VirtualDisplay virtualDisplay;
@@ -70,6 +78,13 @@ public class HostService extends Service {
     private DisplayManager.DisplayListener displayListener;
     private AudioRecord audioRecord;
     private volatile boolean audioEnabled;
+    private final Object unlockGuardLock = new Object();
+    private final LinkedHashMap<Long, Byte> recentUnlockResults =
+            new LinkedHashMap<Long, Byte>(32, 0.75f, true) {
+                @Override protected boolean removeEldestEntry(Map.Entry<Long, Byte> eldest) {
+                    return size() > 64;
+                }
+            };
 
     public static boolean isRunning() { return running; }
     @Override public IBinder onBind(Intent i) { return null; }
@@ -450,29 +465,31 @@ public class HostService extends Service {
             wl.acquire(5000);
         } catch (Exception ignored) {}
 
-        // The first secure-keyguard surface often shows only the lock wallpaper/AOD.
-        // Reveal Android's normal credential UI after the display becomes interactive
-        // so the existing PIN/pattern path has real accessibility nodes to operate on.
-        Handler main = new Handler(Looper.getMainLooper());
-        main.postDelayed(() -> {
-            revealCredentialScreenIfLocked();
+        // Accessibility events are the primary readiness signal. 650 ms remains
+        // only as a fallback timeout before requesting the normal credential surface.
+        new Thread(() -> {
+            boolean ready = RemoteAccessibilityService.awaitCredentialSurface(
+                    CryptoChannel.UNLOCK_PIN, 650L) ||
+                    RemoteAccessibilityService.awaitCredentialSurface(
+                            CryptoChannel.UNLOCK_PATTERN, 0L);
+            if (!ready) revealCredentialScreenIfLocked();
             sendHostStatus();
-        }, 650L);
-        main.postDelayed(this::sendHostStatus, 1400L);
+        }, "remotephone-wake-surface").start();
     }
 
     private boolean revealCredentialScreenIfLocked() {
         if (!RemoteAccessibilityService.isReady()) return false;
         try {
             KeyguardManager km = (KeyguardManager)getSystemService(KEYGUARD_SERVICE);
-            boolean locked = km != null && (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
-                    ? km.isDeviceLocked()
-                    : km.isKeyguardLocked());
+            boolean locked = km != null && km.isKeyguardLocked();
             if (!locked) return false;
 
+            // requestDismissKeyguard() requires an Activity; HostService cannot call it
+            // safely. Keep the existing reveal gesture only as a fallback, while
+            // credential delivery itself remains blocked until Accessibility reports
+            // an active credential entry surface.
             ensurePhysicalDisplayMetrics();
             if (physicalWidth <= 0 || physicalHeight <= 0) return false;
-
             float x = physicalWidth * 0.5f;
             RemoteAccessibilityService.gesture(
                     x, physicalHeight * 0.82f,
@@ -485,15 +502,13 @@ public class HostService extends Service {
     }
 
     private void schedulePostUnlockRecovery() {
-        Handler main = new Handler(Looper.getMainLooper());
-        main.postDelayed(() -> {
+        new Thread(() -> {
+            // Keyguard-gone Accessibility state is primary; 1500 ms is fallback only.
+            RemoteAccessibilityService.awaitKeyguardGone(1500L);
+            resetUnlockBudgetIfKeyguardGone();
             sendHostStatus();
             if (projection == null) trySendRecoveryFrame();
-        }, 700L);
-        main.postDelayed(() -> {
-            sendHostStatus();
-            if (projection == null) trySendRecoveryFrame();
-        }, 1500L);
+        }, "remotephone-post-unlock-state").start();
     }
 
     private void ensurePhysicalDisplayMetrics() {
@@ -946,7 +961,7 @@ public class HostService extends Service {
                                     message.payload[0] == CryptoChannel.CONTROL_WAKE) {
                                 wakeHost();
                             } else if (message.type == CryptoChannel.TYPE_UNLOCK) {
-                                byte result = evaluateUnlockRequest(message.payload);
+                                byte result = evaluateUnlockRequestOnce(message.payload);
                                 current.send(CryptoChannel.TYPE_UNLOCK_RESULT, new byte[]{result});
                                 schedulePostUnlockRecovery();
                             } else if (message.type == CryptoChannel.TYPE_STREAM_FEEDBACK) {
@@ -1040,47 +1055,95 @@ public class HostService extends Service {
         catch(Exception ignored) {}
     }
 
-    private byte evaluateUnlockRequest(byte[] p) {
-        byte result = CryptoChannel.UNLOCK_RESULT_BAD_REQUEST;
-        try {
-            KeyguardManager km = (KeyguardManager)getSystemService(KEYGUARD_SERVICE);
-            boolean locked = km != null && (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
-                    ? km.isDeviceLocked()
-                    : km.isKeyguardLocked());
-            if (!locked) {
-                return CryptoChannel.UNLOCK_RESULT_NOT_LOCKED;
-            }
-            if (p == null || p.length < 2) return result;
+    private byte evaluateUnlockRequestOnce(byte[] p) {
+        if (p == null || p.length < 10) return CryptoChannel.UNLOCK_RESULT_BAD_REQUEST;
+        long requestId = ByteBuffer.wrap(p, 1, 8).getLong();
+        synchronized (unlockGuardLock) {
+            Byte cached = recentUnlockResults.get(requestId);
+            if (cached != null) return cached;
+        }
 
-            byte method = p[0];
-            String credential = new String(p, 1, p.length - 1, StandardCharsets.UTF_8);
-            boolean accepted = method == CryptoChannel.UNLOCK_PIN
-                    ? RemoteAccessibilityService.submitKnownPin(credential)
-                    : method == CryptoChannel.UNLOCK_PATTERN &&
-                    RemoteAccessibilityService.submitKnownPattern(credential);
-
-            // A wake can leave Android on the first lock-screen surface where the
-            // keypad/pattern view is not yet exposed. Reveal it once, allow the
-            // keyguard UI to settle, then retry the exact same known credential.
-            if (!accepted && revealCredentialScreenIfLocked()) {
-                sleepQuietly(450L);
-                accepted = method == CryptoChannel.UNLOCK_PIN
-                        ? RemoteAccessibilityService.submitKnownPin(credential)
-                        : method == CryptoChannel.UNLOCK_PATTERN &&
-                        RemoteAccessibilityService.submitKnownPattern(credential);
-            }
-
-            result = accepted
-                    ? CryptoChannel.UNLOCK_RESULT_ACCEPTED
-                    : CryptoChannel.UNLOCK_RESULT_UNSUPPORTED;
-        } catch (Exception ignored) {
-            result = CryptoChannel.UNLOCK_RESULT_UNSUPPORTED;
+        byte result = evaluateUnlockRequest(p);
+        synchronized (unlockGuardLock) {
+            recentUnlockResults.put(requestId, result);
         }
         return result;
     }
 
+    private byte evaluateUnlockRequest(byte[] p) {
+        byte[] credential = null;
+        try {
+            KeyguardManager km = (KeyguardManager)getSystemService(KEYGUARD_SERVICE);
+            boolean locked = km != null && km.isKeyguardLocked();
+            if (!locked) {
+                resetUnlockBudget();
+                return CryptoChannel.UNLOCK_RESULT_NOT_LOCKED;
+            }
+            if (p == null || p.length < 10) return CryptoChannel.UNLOCK_RESULT_BAD_REQUEST;
+
+            byte method = p[0];
+            if (method != CryptoChannel.UNLOCK_PIN && method != CryptoChannel.UNLOCK_PATTERN)
+                return CryptoChannel.UNLOCK_RESULT_BAD_REQUEST;
+            credential = Arrays.copyOfRange(p, 9, p.length);
+
+            // Never deliver credential input until Android exposes an active,
+            // focused credential surface. Accessibility events are primary;
+            // fixed values are fallback timeouts only.
+            boolean ready = RemoteAccessibilityService.awaitCredentialSurface(method, 650L);
+            if (!ready && revealCredentialScreenIfLocked()) {
+                ready = RemoteAccessibilityService.awaitCredentialSurface(method, 1500L);
+            }
+            if (!ready) return CryptoChannel.UNLOCK_RESULT_SURFACE_NOT_READY;
+
+            int budget = reserveUnlockDispatch();
+            if (budget == -2) return CryptoChannel.UNLOCK_RESULT_COOLDOWN;
+            if (budget < 0) return CryptoChannel.UNLOCK_RESULT_MANUAL_REQUIRED;
+
+            boolean accepted = method == CryptoChannel.UNLOCK_PIN
+                    ? RemoteAccessibilityService.submitKnownPin(credential)
+                    : RemoteAccessibilityService.submitKnownPattern(credential);
+            return accepted
+                    ? CryptoChannel.UNLOCK_RESULT_ACCEPTED
+                    : CryptoChannel.UNLOCK_RESULT_UNSUPPORTED;
+        } catch (Exception ignored) {
+            return CryptoChannel.UNLOCK_RESULT_UNSUPPORTED;
+        } finally {
+            if (credential != null) Arrays.fill(credential, (byte)0);
+        }
+    }
+
+    private int reserveUnlockDispatch() {
+        synchronized (unlockGuardLock) {
+            SharedPreferences prefs = getSharedPreferences(UNLOCK_GUARD_PREFS, MODE_PRIVATE);
+            int count = prefs.getInt(UNLOCK_COUNT_KEY, 0);
+            if (count >= MAX_UNLOCK_DISPATCHES) return -1;
+            long now = System.currentTimeMillis();
+            long last = prefs.getLong(UNLOCK_LAST_AT_KEY, 0L);
+            if (last > 0L && now - last < UNLOCK_COOLDOWN_MS) return -2;
+            int next = count + 1;
+            prefs.edit().putInt(UNLOCK_COUNT_KEY, next)
+                    .putLong(UNLOCK_LAST_AT_KEY, now).apply();
+            return next;
+        }
+    }
+
+    private void resetUnlockBudgetIfKeyguardGone() {
+        try {
+            KeyguardManager km = (KeyguardManager)getSystemService(KEYGUARD_SERVICE);
+            if (km == null || !km.isKeyguardLocked()) resetUnlockBudget();
+        } catch (Exception ignored) {}
+    }
+
+    private void resetUnlockBudget() {
+        synchronized (unlockGuardLock) {
+            getSharedPreferences(UNLOCK_GUARD_PREFS, MODE_PRIVATE).edit()
+                    .remove(UNLOCK_COUNT_KEY).remove(UNLOCK_LAST_AT_KEY).apply();
+            recentUnlockResults.clear();
+        }
+    }
+
     private void handleUnlock(CryptoChannel c, byte[] p) {
-        byte result = evaluateUnlockRequest(p);
+        byte result = evaluateUnlockRequestOnce(p);
         try { c.send(CryptoChannel.TYPE_UNLOCK_RESULT, new byte[]{result}); }
         catch (Exception e) { closeChannel(c); }
         schedulePostUnlockRecovery();
