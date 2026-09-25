@@ -48,6 +48,9 @@ public final class CryptoChannel implements Closeable {
     public static final byte UNLOCK_RESULT_UNSUPPORTED = 2;
     public static final byte UNLOCK_RESULT_NOT_LOCKED = 3;
     public static final byte UNLOCK_RESULT_BAD_REQUEST = 4;
+    public static final byte UNLOCK_RESULT_SURFACE_NOT_READY = 5;
+    public static final byte UNLOCK_RESULT_MANUAL_REQUIRED = 6;
+    public static final byte UNLOCK_RESULT_COOLDOWN = 7;
 
     private static final byte TYPE_AUTH = 100;
     private static final byte TYPE_AUTH_OK = 101;
