@@ -1,6 +1,8 @@
 package com.remotephone.direct;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.util.Arrays;
 
 /** Controller-side known-credential unlock helper. Device credentials are never persisted. */
@@ -10,6 +12,7 @@ public final class LockScreenManager {
 
     private final Sender sender;
     private final StatusSink status;
+    private final SecureRandom random = new SecureRandom();
 
     public LockScreenManager(Sender sender, StatusSink status) {
         this.sender = sender;
@@ -58,6 +61,9 @@ public final class LockScreenManager {
             case CryptoChannel.UNLOCK_RESULT_ACCEPTED: show("Unlock attempt accepted — checking Host…"); break;
             case CryptoChannel.UNLOCK_RESULT_UNSUPPORTED: show("Android/OEM did not expose secure lock controls remotely"); break;
             case CryptoChannel.UNLOCK_RESULT_NOT_LOCKED: show("Host is no longer locked"); break;
+            case CryptoChannel.UNLOCK_RESULT_SURFACE_NOT_READY: show("Credential surface not ready"); break;
+            case CryptoChannel.UNLOCK_RESULT_MANUAL_REQUIRED: show("Manual unlock required"); break;
+            case CryptoChannel.UNLOCK_RESULT_COOLDOWN: show("Unlock cooldown active — wait before retrying"); break;
             default: show("Unlock request was rejected"); break;
         }
     }
@@ -67,9 +73,10 @@ public final class LockScreenManager {
 
     private void send(byte method, String credential, String successMessage) {
         byte[] secret = credential.getBytes(StandardCharsets.UTF_8);
-        byte[] payload = new byte[secret.length + 1];
+        byte[] payload = new byte[secret.length + 9];
         payload[0] = method;
-        System.arraycopy(secret, 0, payload, 1, secret.length);
+        ByteBuffer.wrap(payload, 1, 8).putLong(random.nextLong());
+        System.arraycopy(secret, 0, payload, 9, secret.length);
         Arrays.fill(secret, (byte)0);
         try {
             sender.send(payload);
