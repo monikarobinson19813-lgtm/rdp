@@ -272,8 +272,10 @@ public class RemoteAccessibilityService extends AccessibilityService {
     }
 
     private static boolean isActiveCredentialNode(AccessibilityNodeInfo node) {
+        // Focusable alone is not enough: require Android to report the credential
+        // entry surface as actually focused/active before any credential delivery.
         return node != null && node.isVisibleToUser() && node.isEnabled() &&
-                (node.isFocused() || node.isAccessibilityFocused() || node.isFocusable());
+                (node.isFocused() || node.isAccessibilityFocused());
     }
 
     private static AccessibilityNodeInfo findEditable(AccessibilityNodeInfo node) {
