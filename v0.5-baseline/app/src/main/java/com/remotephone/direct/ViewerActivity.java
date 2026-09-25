@@ -572,22 +572,11 @@ public class ViewerActivity extends Activity {
             if (channel == ch) ch.close();
             return;
         }
-        long frameAge = lastFrameElapsed > 0 ? now - lastFrameElapsed : 0;
-        boolean hostAlive = lastSeenElapsed > 0 && now - lastSeenElapsed < VIDEO_STALE_MS;
         boolean streamExpected = "Host ready".equals(lastHostState) || "Host recovery view".equals(lastHostState);
-        if (hostAlive && streamExpected && lastFrameElapsed > 0 && frameAge >= VIDEO_STALE_MS) {
-            if (!videoStale) {
-                videoStale = true;
-                final long frameAgeSeconds = Math.max(1, frameAge / 1000);
-                runOnUiThread(() -> {
-                    if (channel == ch) {
-                        hostUiState = HostStateManager.State.STREAM_UNAVAILABLE;
-                        remoteStatus.setText("Stream unavailable — Host still online");
-                        healthStatus.setText("Video stale for " + frameAgeSeconds + "s");
-                    }
-                });
-            }
-        } else if (!streamExpected) {
+        // Frame age alone cannot distinguish a failed stream from a genuinely static screen:
+        // MediaProjection/ImageReader may produce no new image while pixels are unchanged.
+        // Keep the Host-reported state while traffic is alive; frame age remains health telemetry.
+        if (!streamExpected) {
             videoStale = false;
         }
         if (now - lastPingAttemptElapsed >= 3000 &&
