@@ -27,13 +27,18 @@ import java.util.List;
  */
 public class RemoteAccessibilityService extends AccessibilityService {
     private static volatile RemoteAccessibilityService instance;
+    private static final Object CREDENTIAL_SURFACE_MONITOR = new Object();
 
     @Override protected void onServiceConnected() {
         super.onServiceConnected();
         instance = this;
     }
 
-    @Override public void onAccessibilityEvent(AccessibilityEvent event) {}
+    @Override public void onAccessibilityEvent(AccessibilityEvent event) {
+        synchronized (CREDENTIAL_SURFACE_MONITOR) {
+            CREDENTIAL_SURFACE_MONITOR.notifyAll();
+        }
+    }
     @Override public void onInterrupt() {}
 
     @Override public void onDestroy() {
@@ -112,7 +117,7 @@ public class RemoteAccessibilityService extends AccessibilityService {
         try {
             KeyguardManager km = (KeyguardManager)s.getSystemService(KEYGUARD_SERVICE);
             if (km != null && km.isKeyguardLocked()) {
-                submitUnlockCredential(s, text);
+                // Generic remote text must never become a lock-screen credential path.
                 return;
             }
 
@@ -126,89 +131,149 @@ public class RemoteAccessibilityService extends AccessibilityService {
         } catch (Exception ignored) {}
     }
 
-    public static boolean submitKnownPin(String pin) {
+    public static boolean awaitCredentialSurface(byte method, long timeoutMs) {
+        long deadline = android.os.SystemClock.elapsedRealtime() + Math.max(0L, timeoutMs);
+        do {
+            if (isCredentialSurfaceReady(method)) return true;
+            long remaining = deadline - android.os.SystemClock.elapsedRealtime();
+            if (remaining <= 0L) return false;
+            synchronized (CREDENTIAL_SURFACE_MONITOR) {
+                try {
+                    CREDENTIAL_SURFACE_MONITOR.wait(Math.min(remaining, 250L));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+        } while (true);
+    }
+
+    public static boolean awaitKeyguardGone(long timeoutMs) {
         RemoteAccessibilityService s = instance;
-        if (s == null || pin == null || pin.length() < 4 || pin.length() > 16) return false;
-        for (int i = 0; i < pin.length(); i++) if (!Character.isDigit(pin.charAt(i))) return false;
-        return submitUnlockCredential(s, pin);
+        if (s == null) return false;
+        long deadline = android.os.SystemClock.elapsedRealtime() + Math.max(0L, timeoutMs);
+        do {
+            if (!isKeyguardLocked(s)) return true;
+            long remaining = deadline - android.os.SystemClock.elapsedRealtime();
+            if (remaining <= 0L) return false;
+            synchronized (CREDENTIAL_SURFACE_MONITOR) {
+                try {
+                    CREDENTIAL_SURFACE_MONITOR.wait(Math.min(remaining, 250L));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+        } while (true);
+    }
+
+    public static boolean isCredentialSurfaceReady(byte method) {
+        RemoteAccessibilityService s = instance;
+        if (s == null || !isKeyguardLocked(s)) return false;
+        try {
+            AccessibilityNodeInfo root = s.getRootInActiveWindow();
+            if (root == null) return false;
+            if (method == CryptoChannel.UNLOCK_PIN) {
+                AccessibilityNodeInfo entry = findEditable(root);
+                if (!isActiveCredentialNode(entry)) return false;
+                for (char digit = '0'; digit <= '9'; digit++) {
+                    AccessibilityNodeInfo key = findNodeByExactLabel(root, String.valueOf(digit));
+                    if (key == null || !key.isVisibleToUser() || !key.isEnabled()) return false;
+                }
+                return true;
+            }
+            if (method == CryptoChannel.UNLOCK_PATTERN) {
+                return isActiveCredentialNode(findPatternNode(root));
+            }
+        } catch (Exception ignored) {}
+        return false;
+    }
+
+    public static boolean submitKnownPin(byte[] pin) {
+        RemoteAccessibilityService s = instance;
+        if (s == null || pin == null || pin.length < 4 || pin.length > 16) return false;
+        for (byte b : pin) if (b < '0' || b > '9') return false;
+        if (!isCredentialSurfaceReady(CryptoChannel.UNLOCK_PIN)) return false;
+        try {
+            for (byte b : pin) {
+                // Re-check immediately before every digit delivery.
+                if (!isCredentialSurfaceReady(CryptoChannel.UNLOCK_PIN)) return false;
+                AccessibilityNodeInfo root = s.getRootInActiveWindow();
+                if (root == null) return false;
+                AccessibilityNodeInfo digit = findNodeByExactLabel(root, String.valueOf((char)b));
+                if (digit == null || !clickNodeOrParent(digit)) return false;
+            }
+            AccessibilityNodeInfo root = s.getRootInActiveWindow();
+            clickConfirmIfPresent(root);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     /** Best-effort only; no blind coordinate guessing is used. */
-    public static boolean submitKnownPattern(String pattern) {
+    public static boolean submitKnownPattern(byte[] pattern) {
         RemoteAccessibilityService s = instance;
         if (s == null || pattern == null) return false;
-        String digits = pattern.replaceAll("[^1-9]", "");
-        if (digits.length() < 4 || digits.length() > 9) return false;
+        byte[] digits = new byte[pattern.length];
+        int count = 0;
         boolean[] used = new boolean[10];
-        for (int i = 0; i < digits.length(); i++) {
-            int n = digits.charAt(i) - '0';
-            if (used[n]) return false;
-            used[n] = true;
-        }
         try {
+            for (byte b : pattern) {
+                if (b < '1' || b > '9') continue;
+                int n = b - '0';
+                if (used[n]) return false;
+                used[n] = true;
+                digits[count++] = b;
+            }
+            if (count < 4 || count > 9) return false;
+            if (!isCredentialSurfaceReady(CryptoChannel.UNLOCK_PATTERN)) return false;
+
             AccessibilityNodeInfo root = s.getRootInActiveWindow();
             AccessibilityNodeInfo patternNode = findPatternNode(root);
-            if (patternNode == null) return false;
+            if (!isActiveCredentialNode(patternNode)) return false;
             Rect bounds = new Rect();
             patternNode.getBoundsInScreen(bounds);
             if (bounds.width() < 90 || bounds.height() < 90) return false;
+
             float cellW = bounds.width() / 3f;
             float cellH = bounds.height() / 3f;
             Path path = new Path();
-            for (int i = 0; i < digits.length(); i++) {
-                int index = digits.charAt(i) - '1';
+            for (int i = 0; i < count; i++) {
+                int index = digits[i] - '1';
                 int row = index / 3;
                 int col = index % 3;
                 float x = bounds.left + (col + 0.5f) * cellW;
                 float y = bounds.top + (row + 0.5f) * cellH;
                 if (i == 0) path.moveTo(x, y); else path.lineTo(x, y);
             }
-            long duration = Math.max(300L, digits.length() * 120L);
+
+            // Re-check immediately before the single pattern gesture dispatch.
+            if (!isCredentialSurfaceReady(CryptoChannel.UNLOCK_PATTERN)) return false;
+            long duration = Math.max(300L, count * 120L);
             GestureDescription gesture = new GestureDescription.Builder()
                     .addStroke(new GestureDescription.StrokeDescription(path, 0, duration))
                     .build();
             return s.dispatchGesture(gesture, null, null);
-        } catch (Exception ignored) { return false; }
+        } catch (Exception ignored) {
+            return false;
+        } finally {
+            java.util.Arrays.fill(digits, (byte)0);
+        }
     }
 
-    /**
-     * Best-effort only. Android/OEM policy may hide or block secure keyguard nodes.
-     * Supports editable password/PIN fields when exposed, and PIN keypads whose
-     * digit buttons are exposed to Accessibility.
-     */
-    private static boolean submitUnlockCredential(RemoteAccessibilityService s, String credential) {
-        if (credential == null || credential.length() < 1 || credential.length() > 64) return false;
+    private static boolean isKeyguardLocked(RemoteAccessibilityService s) {
         try {
-            AccessibilityNodeInfo root = s.getRootInActiveWindow();
-            if (root == null) return false;
-
-            AccessibilityNodeInfo editable = findEditable(root);
-            if (editable != null) {
-                Bundle args = new Bundle();
-                args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, credential);
-                boolean set = editable.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
-                if (!set) return false;
-                root = s.getRootInActiveWindow();
-                clickConfirmIfPresent(root);
-                return true;
-            }
-
-            for (int i = 0; i < credential.length(); i++) {
-                char ch = credential.charAt(i);
-                if (!Character.isDigit(ch)) return false;
-                root = s.getRootInActiveWindow();
-                if (root == null) return false;
-                AccessibilityNodeInfo digit = findNodeByExactLabel(root, String.valueOf(ch));
-                if (digit == null || !clickNodeOrParent(digit)) return false;
-                try { Thread.sleep(55); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return false; }
-            }
-
-            root = s.getRootInActiveWindow();
-            clickConfirmIfPresent(root);
-            return true;
+            KeyguardManager km = (KeyguardManager)s.getSystemService(KEYGUARD_SERVICE);
+            return km != null && km.isKeyguardLocked();
         } catch (Exception ignored) {
             return false;
         }
+    }
+
+    private static boolean isActiveCredentialNode(AccessibilityNodeInfo node) {
+        return node != null && node.isVisibleToUser() && node.isEnabled() &&
+                (node.isFocused() || node.isAccessibilityFocused() || node.isFocusable());
     }
 
     private static AccessibilityNodeInfo findEditable(AccessibilityNodeInfo node) {
