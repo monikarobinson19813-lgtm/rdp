@@ -204,8 +204,47 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Build debug APK and AAB
-        run: gradle :app:assembleDebug :app:bundleDebug --stacktrace
+      - name: Prepare persistent test signing
+        shell: bash
+        env:
+          RPD_TEST_KEYSTORE_B64: ${{ secrets.RPD_TEST_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RPD_TEST_KEYSTORE_B64:-}" ]; then
+            echo "Persistent test signing secret is not configured"
+            exit 1
+          fi
+          signing_keystore="$RUNNER_TEMP/remotephone-test-signing.jks"
+          case "$signing_keystore" in
+            "$GITHUB_WORKSPACE"/*)
+              echo "Signing keystore path must stay outside the repository workspace"
+              exit 1
+              ;;
+          esac
+          printf '%s' "$RPD_TEST_KEYSTORE_B64" | base64 -d > "$signing_keystore"
+          chmod 600 "$signing_keystore"
+          test -s "$signing_keystore"
+
+      - name: Build debug APK and AAB with persistent test signing
+        shell: bash
+        env:
+          RPD_REQUIRE_TEST_SIGNING: 'true'
+          RPD_TEST_KEYSTORE_PATH: ${{ runner.temp }}/remotephone-test-signing.jks
+          RPD_TEST_STORE_PASSWORD: ${{ secrets.RPD_TEST_STORE_PASSWORD }}
+          RPD_TEST_KEY_ALIAS: ${{ secrets.RPD_TEST_KEY_ALIAS }}
+          RPD_TEST_KEY_PASSWORD: ${{ secrets.RPD_TEST_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -s "$RPD_TEST_KEYSTORE_PATH"
+          test -n "${RPD_TEST_STORE_PASSWORD:-}"
+          test -n "${RPD_TEST_KEY_ALIAS:-}"
+          test -n "${RPD_TEST_KEY_PASSWORD:-}"
+          gradle :app:assembleDebug :app:bundleDebug --stacktrace
+
+      - name: Remove transient test keystore
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/remotephone-test-signing.jks"
 
       - name: Commit validated v0.6 Controller wiring
         if: github.ref == 'refs/heads/v0.4'
