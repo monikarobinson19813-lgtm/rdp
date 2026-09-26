@@ -1,5 +1,22 @@
 plugins { id 'com.android.application' }
 
+def rpdTestKeystorePath = System.getenv('RPD_TEST_KEYSTORE_PATH')
+def rpdTestStorePassword = System.getenv('RPD_TEST_STORE_PASSWORD')
+def rpdTestKeyAlias = System.getenv('RPD_TEST_KEY_ALIAS')
+def rpdTestKeyPassword = System.getenv('RPD_TEST_KEY_PASSWORD')
+def rpdTestSigningConfigured = [
+        rpdTestKeystorePath,
+        rpdTestStorePassword,
+        rpdTestKeyAlias,
+        rpdTestKeyPassword
+].every { it != null && !it.isEmpty() }
+def rpdTestSigningRequired =
+        'true'.equalsIgnoreCase(System.getenv('RPD_REQUIRE_TEST_SIGNING'))
+
+if (rpdTestSigningRequired && !rpdTestSigningConfigured) {
+    throw new GradleException('Persistent test signing environment is incomplete')
+}
+
 android {
     namespace 'com.remotephone.direct'
     compileSdk 35
@@ -10,6 +27,25 @@ android {
         targetSdk 35
         versionCode 1
         versionName '0.1-mvp'
+    }
+
+    signingConfigs {
+        testsign {
+            if (rpdTestSigningConfigured) {
+                storeFile file(rpdTestKeystorePath)
+                storePassword rpdTestStorePassword
+                keyAlias rpdTestKeyAlias
+                keyPassword rpdTestKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            if (rpdTestSigningConfigured) {
+                signingConfig signingConfigs.testsign
+            }
+        }
     }
 }
 
