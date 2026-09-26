@@ -11,6 +11,7 @@ import android.os.SystemClock;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
+import android.view.inputmethod.EditorInfo;
 import android.widget.*;
 
 import java.io.*;
@@ -192,7 +193,10 @@ public class ViewerActivity extends Activity {
         unlockPin.setTextColor(0xFFFFFFFF);
         unlockPin.setHintTextColor(0xFFAAAAAA);
         unlockPin.setSingleLine(true);
-        unlockPin.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        unlockPin.setInputType(InputType.TYPE_CLASS_NUMBER);
+        unlockPin.setTransformationMethod(android.text.method.PasswordTransformationMethod.getInstance());
+        unlockPin.setImeOptions(unlockPin.getImeOptions() | EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
+        unlockPin.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
         Button unlockPinButton = b("UNLOCK PIN");
         pinRow.addView(unlockPin, new LinearLayout.LayoutParams(0, -2, 1f));
         pinRow.addView(unlockPinButton, new LinearLayout.LayoutParams(-2, -2));
