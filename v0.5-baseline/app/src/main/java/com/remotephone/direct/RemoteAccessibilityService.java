@@ -11,6 +11,7 @@ import android.hardware.HardwareBuffer;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.DisplayMetrics;
+import android.util.Log;
 import android.view.Display;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
@@ -28,6 +29,7 @@ import java.util.List;
 public class RemoteAccessibilityService extends AccessibilityService {
     private static volatile RemoteAccessibilityService instance;
     private static final Object CREDENTIAL_SURFACE_MONITOR = new Object();
+    private static final String PIN_GATE_TAG = "RPD-PinGate";
 
     @Override protected void onServiceConnected() {
         super.onServiceConnected();
@@ -169,23 +171,85 @@ public class RemoteAccessibilityService extends AccessibilityService {
 
     public static boolean isCredentialSurfaceReady(byte method) {
         RemoteAccessibilityService s = instance;
-        if (s == null || !isKeyguardLocked(s)) return false;
+        if (s == null) return false;
         try {
+            boolean keyguardLocked = isKeyguardLocked(s);
             AccessibilityNodeInfo root = s.getRootInActiveWindow();
-            if (root == null) return false;
             if (method == CryptoChannel.UNLOCK_PIN) {
-                AccessibilityNodeInfo entry = findEditable(root);
-                if (!isActiveCredentialNode(entry)) return false;
-                for (char digit = '0'; digit <= '9'; digit++) {
-                    AccessibilityNodeInfo key = findNodeByExactLabel(root, String.valueOf(digit));
-                    if (key == null || !key.isVisibleToUser() || !key.isEnabled()) return false;
+                PinGateResult result = evaluatePinKeypadGate(keyguardLocked, root);
+                if (result == PinGateResult.READY_WITH_VISIBILITY_ADVISORY) {
+                    Log.d(PIN_GATE_TAG, "PIN gate ready: visibility advisory");
+                    return true;
+                }
+                if (result != PinGateResult.READY) {
+                    Log.d(PIN_GATE_TAG, "PIN gate not ready: " + result.name());
+                    return false;
                 }
                 return true;
             }
+            if (!keyguardLocked || root == null) return false;
             if (method == CryptoChannel.UNLOCK_PATTERN) {
                 return isActiveCredentialNode(findPatternNode(root));
             }
         } catch (Exception ignored) {}
+        return false;
+    }
+
+    enum PinGateResult {
+        READY,
+        READY_WITH_VISIBILITY_ADVISORY,
+        KEYGUARD_UNLOCKED,
+        ROOT_UNAVAILABLE,
+        SURFACE_UNIDENTIFIED,
+        DIGIT_MISSING,
+        DIGIT_DISABLED,
+        DIGIT_NOT_CLICKABLE
+    }
+
+    static PinGateResult evaluatePinKeypadGate(boolean keyguardLocked, AccessibilityNodeInfo root) {
+        if (!keyguardLocked) return PinGateResult.KEYGUARD_UNLOCKED;
+        if (root == null) return PinGateResult.ROOT_UNAVAILABLE;
+        if (!isIdentifiedKeyguardPinSurface(root)) return PinGateResult.SURFACE_UNIDENTIFIED;
+
+        boolean visibilityAdvisory = false;
+        for (char digit = '0'; digit <= '9'; digit++) {
+            AccessibilityNodeInfo key = findNodeByExactLabel(root, String.valueOf(digit));
+            if (key == null) return PinGateResult.DIGIT_MISSING;
+            if (!key.isEnabled()) return PinGateResult.DIGIT_DISABLED;
+            if (!key.isClickable()) return PinGateResult.DIGIT_NOT_CLICKABLE;
+            if (!key.isVisibleToUser()) visibilityAdvisory = true;
+        }
+        return visibilityAdvisory
+                ? PinGateResult.READY_WITH_VISIBILITY_ADVISORY
+                : PinGateResult.READY;
+    }
+
+    static boolean isPinKeypadGateReadyForTest(boolean keyguardLocked, AccessibilityNodeInfo root) {
+        PinGateResult result = evaluatePinKeypadGate(keyguardLocked, root);
+        return result == PinGateResult.READY ||
+                result == PinGateResult.READY_WITH_VISIBILITY_ADVISORY;
+    }
+
+    private static boolean isIdentifiedKeyguardPinSurface(AccessibilityNodeInfo root) {
+        CharSequence packageName = root.getPackageName();
+        boolean systemUi = packageName != null &&
+                packageName.toString().toLowerCase(java.util.Locale.US).contains("systemui");
+        return systemUi && hasKeyguardCredentialMarker(root);
+    }
+
+    private static boolean hasKeyguardCredentialMarker(AccessibilityNodeInfo node) {
+        if (node == null) return false;
+        String viewId = node.getViewIdResourceName() == null
+                ? ""
+                : node.getViewIdResourceName().toLowerCase(java.util.Locale.US);
+        if (viewId.contains("keyguard") || viewId.contains("bouncer") ||
+                viewId.contains("security_pin") || viewId.contains("pin_keyboard") ||
+                viewId.contains("numeric_keyboard")) {
+            return true;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (hasKeyguardCredentialMarker(node.getChild(i))) return true;
+        }
         return false;
     }
 

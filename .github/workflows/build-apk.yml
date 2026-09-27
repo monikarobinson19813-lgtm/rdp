@@ -239,7 +239,7 @@ jobs:
           test -n "${RPD_TEST_STORE_PASSWORD:-}"
           test -n "${RPD_TEST_KEY_ALIAS:-}"
           test -n "${RPD_TEST_KEY_PASSWORD:-}"
-          gradle :app:assembleDebug :app:bundleDebug --stacktrace
+          gradle :app:testDebugUnitTest :app:assembleDebug :app:bundleDebug --stacktrace
 
       - name: Remove transient test keystore
         if: always()
