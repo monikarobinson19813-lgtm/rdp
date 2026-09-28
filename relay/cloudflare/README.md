@@ -22,7 +22,7 @@ The relay uses the Durable Objects WebSocket Hibernation API. Each accepted sock
 
 The four channels remain separate: `host`, `controller`, `host-control`, and `controller-control`.
 
-Payloads are forwarded opaquely without parsing, transforming, or logging message content. Android OkHttp protocol PING frames are handled by the Cloudflare runtime without waking a hibernating Durable Object; an application-level auto-response is also reserved for future relay keepalives.
+Payloads are forwarded opaquely without parsing, transforming, or logging message content. Android OkHttp protocol PING frames are handled by the Cloudflare runtime without waking a hibernating Durable Object. RemotePhone's encrypted application-level health messages are forwarded normally and may briefly wake the Durable Object; the object becomes hibernation-eligible again when the handler returns.
 
 ## Deploy
 
