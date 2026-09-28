@@ -42,12 +42,6 @@ export class RelayRoom {
     this.state = state;
     this.env = env;
 
-    // Android OkHttp protocol PING frames are handled by the Cloudflare runtime
-    // without waking a hibernating Durable Object. Reserve an app-level
-    // auto-response as well for any future text keepalive.
-    this.state.setWebSocketAutoResponse(
-      new WebSocketRequestResponsePair("rpd-keepalive", "rpd-keepalive-ack"),
-    );
   }
 
   async fetch(request) {
