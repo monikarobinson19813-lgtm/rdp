@@ -1,6 +1,28 @@
-# RemotePhone v0.3 Internet relay
+# RemotePhone Internet relay
 
 This Worker/Durable Object provides Remote-ID routing only. Screen, control and audio payloads remain encrypted end-to-end by the Android clients.
+
+## Security
+
+Production deployments set `ENVIRONMENT = "production"`. The `/debug/<remote-id>` route is therefore disabled in production and returns 404.
+
+Any non-production diagnostic access uses the `RPD_RELAY_DEBUG_SECRET` Cloudflare secret binding. Never put its value in source control, logs, chat, screenshots, Hub pages, or `.dev.vars` committed to Git.
+
+Rotate the binding before deployment:
+
+```bash
+npx wrangler secret put RPD_RELAY_DEBUG_SECRET
+```
+
+Local `.dev.vars` files are ignored by this directory's `.gitignore`.
+
+## WebSocket hibernation
+
+The relay uses the Durable Objects WebSocket Hibernation API. Each accepted socket is tagged by role and Remote ID, and role/Remote-ID metadata is stored with `serializeAttachment()` so routing survives hibernation and constructor re-entry.
+
+The four channels remain separate: `host`, `controller`, `host-control`, and `controller-control`.
+
+Payloads are forwarded opaquely without parsing, transforming, or logging message content. Android OkHttp protocol PING frames are handled by the Cloudflare runtime without waking a hibernating Durable Object; an application-level auto-response is also reserved for future relay keepalives.
 
 ## Deploy
 
@@ -10,27 +32,4 @@ From this directory:
 npx wrangler deploy
 ```
 
-After deployment, copy the HTTPS Worker URL into:
-
-`v0.3-overrides/RelayConfig.java`
-
-Example:
-
-```java
-public static final String BASE_URL = "https://remotephone-relay.<account>.workers.dev";
-```
-
-## Protocol
-
-- Host connects to `/relay/<9-digit-remote-id>` using WebSocket headers:
-  - `X-RemotePhone-Role: host`
-  - `X-RemotePhone-Host-Token: <persistent-random-token>`
-- Controller connects to the same path with:
-  - `X-RemotePhone-Role: controller`
-- The Durable Object stores a hash of the first Host registration token for each Remote ID and refuses another token for the same ID.
-- One Controller session per Host is supported in v0.3.
-- The relay forwards opaque binary WebSocket frames. It does not receive the Android session PIN or decrypted remote-session payload.
-
-## Security model
-
-The Android v0.3 protocol uses ephemeral P-256 ECDH for session keys plus a persistent Host signing identity. The Controller pins the Host identity fingerprint after a successful first connection. The 6-digit session PIN is sent only inside the already-encrypted channel and is not used as the encryption root key.
+After deployment, verify `/health` returns `RemotePhone relay OK`, production `/debug/<remote-id>` returns 404, Host/Controller round-trip behavior is unchanged, and an idle connection can hibernate and later wake without reconnecting.
