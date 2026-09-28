@@ -12,3 +12,10 @@ class_name = "RelayRoom"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["RelayRoom"]
+
+[previews.vars]
+ENVIRONMENT = "production"
+
+[[previews.durable_objects.bindings]]
+name = "RELAY"
+class_name = "RelayRoom"
