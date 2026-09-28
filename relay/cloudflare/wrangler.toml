@@ -19,3 +19,16 @@ ENVIRONMENT = "production"
 [[previews.durable_objects.bindings]]
 name = "RELAY"
 class_name = "RelayRoom"
+
+[previews.observability]
+enabled = true
+
+[previews.observability.logs]
+enabled = true
+invocation_logs = true
+persist = true
+
+[previews.observability.traces]
+enabled = true
+head_sampling_rate = 1
+persist = true
