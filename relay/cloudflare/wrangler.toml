@@ -2,6 +2,9 @@ name = "remotephone-relay"
 main = "src/index.js"
 compatibility_date = "2026-09-16"
 
+[vars]
+ENVIRONMENT = "production"
+
 [[durable_objects.bindings]]
 name = "RELAY"
 class_name = "RelayRoom"
@@ -9,3 +12,23 @@ class_name = "RelayRoom"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["RelayRoom"]
+
+[previews.vars]
+ENVIRONMENT = "production"
+
+[[previews.durable_objects.bindings]]
+name = "RELAY"
+class_name = "RelayRoom"
+
+[previews.observability]
+enabled = true
+
+[previews.observability.logs]
+enabled = true
+invocation_logs = true
+persist = true
+
+[previews.observability.traces]
+enabled = true
+head_sampling_rate = 1
+persist = true
