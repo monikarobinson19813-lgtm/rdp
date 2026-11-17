@@ -5,7 +5,7 @@ import {BrowserCryptoChannel, ByteStreamReader} from '../../web/controller/crypt
 
 const port = Number(process.argv[2]);
 if (!Number.isInteger(port) || port < 1) throw new Error('usage: node interop.mjs <port>');
-const TEST_PIN = '314159'; // synthetic CI-only value
+const TEST_PIN = new TextEncoder().encode('314159'); // synthetic CI-only value
 const PING = 5;
 
 function transport() {
@@ -31,7 +31,7 @@ async function negativeF31() {
   };
   await assert.rejects(
     BrowserCryptoChannel.connect({
-      cryptoApi: webcrypto, reader: t.reader, write, pin: TEST_PIN,
+      cryptoApi: webcrypto, reader: t.reader, write, pinBytes: TEST_PIN,
       confirmFingerprint: async () => { confirmationReached = true; return false; },
     }), /fingerprint not confirmed/
   );
@@ -54,7 +54,7 @@ function splitRandom(raw, seed) {
 async function positive(i) {
   const t = transport();
   const ch = await BrowserCryptoChannel.connect({
-    cryptoApi: webcrypto, reader: t.reader, write: t.write, pin: TEST_PIN,
+    cryptoApi: webcrypto, reader: t.reader, write: t.write, pinBytes: TEST_PIN,
     confirmFingerprint: async () => true,
   });
   const payload = new Uint8Array([i & 255, (i >>> 8) & 255]);

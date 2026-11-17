@@ -171,8 +171,11 @@ export class BrowserCryptoChannel {
     this.ecdsaScalarBytes = ecdsaScalarBytes;
   }
 
-  static async connect({cryptoApi, reader, write, pin, expectedFingerprint = '', confirmFingerprint}) {
-    if (!/^\d{6}$/.test(pin)) throw new Error('invalid session PIN');
+  static async connect({cryptoApi, reader, write, pinBytes, expectedFingerprint = '', confirmFingerprint}) {
+    if (!(pinBytes instanceof Uint8Array) || pinBytes.length !== 6 ||
+        [...pinBytes].some((b) => b < 0x30 || b > 0x39)) {
+      throw new Error('invalid session PIN');
+    }
     const clientKeys = await cryptoApi.subtle.generateKey({name: 'ECDH', namedCurve: 'P-256'}, true, ['deriveBits']);
     const clientSpki = new Uint8Array(await cryptoApi.subtle.exportKey('spki', clientKeys.publicKey));
     const clientNonce = cryptoApi.getRandomValues(new Uint8Array(16));
@@ -201,7 +204,7 @@ export class BrowserCryptoChannel {
     const shared = new Uint8Array(await cryptoApi.subtle.deriveBits({name: 'ECDH', public: hostEphemeralKey}, clientKeys.privateKey, 256));
     const session = await deriveSession(cryptoApi, shared, transcript);
     const aesKey = await importAes(cryptoApi, session);
-    await write(await encryptFrame(cryptoApi, aesKey, TYPE_AUTH, te.encode(pin)));
+    await write(await encryptFrame(cryptoApi, aesKey, TYPE_AUTH, pinBytes));
     const auth = await decryptFrame(cryptoApi, aesKey, reader);
     if (auth.type !== TYPE_AUTH_OK) throw new Error('Host authentication failed');
     return new BrowserCryptoChannel(cryptoApi, reader, write, aesKey, fp, {r: sig.rBytes, s: sig.sBytes});

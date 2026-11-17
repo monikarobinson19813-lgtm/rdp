@@ -1,0 +1,26 @@
+name: WEB1 static browser client
+
+on:
+  push:
+    branches:
+      - web1-browser-controller
+  pull_request:
+    paths:
+      - 'web/**'
+      - 'tests/web1/browser-policy.mjs'
+      - '.github/workflows/web1-browser-client.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  browser-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify F33/F36/F37 source policy
+        run: node tests/web1/browser-policy.mjs
