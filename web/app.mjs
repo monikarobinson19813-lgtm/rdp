@@ -1,4 +1,5 @@
 import {BrowserCryptoChannel, ByteStreamReader} from "./controller/crypto-channel.mjs";
+import {gesturePayload} from "./controller/protocol-payloads.mjs";
 
 const RELAY_HOST = "remotephone-relay.monikarobinson19813.workers.dev";
 const MAIN_PROTOCOL = "remotephone.controller.v1";
@@ -369,17 +370,6 @@ function normalizedPoint(event) {
   };
 }
 
-function gesturePayload(a, b, duration) {
-  const out = new Uint8Array(24);
-  const view = new DataView(out.buffer);
-  view.setFloat32(0, a.x, false);
-  view.setFloat32(4, a.y, false);
-  view.setFloat32(8, b.x, false);
-  view.setFloat32(12, b.y, false);
-  view.setBigInt64(16, BigInt(Math.max(1, Math.min(5000, duration))), false);
-  return out;
-}
-
 async function sendOnce(channel, type, payload) {
   if (!channel) throw new Error("Host connection unavailable");
   await channel.send(type, payload);
@@ -533,7 +523,9 @@ ui.screenWrap.addEventListener("pointerup", async (event) => {
   if (!end) return;
   try {
     await sendOnce(mainChannel, TYPE_GESTURE, gesturePayload(start.point, end, performance.now() - start.at));
-  } catch (_) {}
+  } catch (_) {
+    setStatus("Gesture could not be sent.");
+  }
 });
 
 window.addEventListener("pagehide", () => {
