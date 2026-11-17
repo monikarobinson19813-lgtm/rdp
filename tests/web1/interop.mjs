@@ -2,6 +2,15 @@ import net from 'node:net';
 import {webcrypto} from 'node:crypto';
 import assert from 'node:assert/strict';
 import {BrowserCryptoChannel, ByteStreamReader} from '../../web/controller/crypto-channel.mjs';
+import {
+  gesturePayload,
+  navPayload,
+  textPayload,
+  unlockPayload,
+  controlPayload,
+  streamQualityPayload,
+  parseFramePayload,
+} from '../../web/controller/protocol-payloads.mjs';
 
 const port = Number(process.argv[2]);
 if (!Number.isInteger(port) || port < 1) throw new Error('usage: node interop.mjs <port>');
@@ -74,7 +83,33 @@ async function positive(i) {
   return ch.ecdsaScalarBytes.r === 31 || ch.ecdsaScalarBytes.s === 31;
 }
 
+async function payloadInterop() {
+  const t = transport();
+  const ch = await BrowserCryptoChannel.connect({
+    cryptoApi: webcrypto, reader: t.reader, write: t.write, pinBytes: TEST_PIN,
+    confirmFingerprint: async () => true,
+  });
+
+  await ch.send(2, gesturePayload({x: 0.5, y: 0.25}, {x: 0.75, y: 0.9}, 123.456));
+  await ch.send(3, navPayload(2));
+  await ch.send(4, textPayload('WEB1 payload ✓'));
+  await ch.send(10, unlockPayload(1, new Uint8Array([1,2,3,4,5,6,7,8]), new TextEncoder().encode('2468')));
+  await ch.send(8, controlPayload(1));
+  await ch.send(14, streamQualityPayload(3));
+
+  const frameMessage = await ch.read();
+  assert.equal(frameMessage.type, 1, 'expected TYPE_FRAME');
+  const frame = parseFramePayload(frameMessage.payload);
+  assert.equal(frame.width, 720);
+  assert.equal(frame.height, 1600);
+  assert.equal(frame.timestamp, 123456789n);
+  assert.deepEqual([...frame.jpeg], [255,216,1,35,255,217]);
+  t.socket.end();
+  console.log('WEB1 F40 payload interop PASS: gesture/nav/text/unlock/wake/quality/frame');
+}
+
 await negativeF31();
+await payloadInterop();
 let shortScalarSignatures = 0;
 let handshakes = 0;
 const minimum = 1000;

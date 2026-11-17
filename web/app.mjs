@@ -1,5 +1,13 @@
 import {BrowserCryptoChannel, ByteStreamReader} from "./controller/crypto-channel.mjs";
-import {gesturePayload} from "./controller/protocol-payloads.mjs";
+import {
+  gesturePayload,
+  navPayload,
+  textPayload,
+  unlockPayload,
+  controlPayload,
+  streamQualityPayload,
+  parseFramePayload,
+} from "./controller/protocol-payloads.mjs";
 
 const RELAY_HOST = "remotephone-relay.monikarobinson19813.workers.dev";
 const MAIN_PROTOCOL = "remotephone.controller.v1";
@@ -236,7 +244,7 @@ async function connectSession(isReconnect = false) {
     ui.connectPanel.classList.add("hidden");
     ui.viewerPanel.classList.remove("hidden");
     setStatus(isReconnect ? "Reconnected to Host" : "Connected to Host");
-    await mainChannel.send(TYPE_STREAM_QUALITY, new Uint8Array([STREAM_QUALITY_AUTO]));
+    await mainChannel.send(TYPE_STREAM_QUALITY, streamQualityPayload(STREAM_QUALITY_AUTO));
 
     watchTransport(main.transport, myGeneration);
     watchTransport(control.transport, myGeneration);
@@ -348,11 +356,13 @@ function handleControlMessage(message) {
 }
 
 function renderFrame(payload) {
-  if (!(payload instanceof Uint8Array) || payload.length < 20) return;
-  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-  const jpegLength = view.getInt32(16, false);
-  if (jpegLength < 1 || 20 + jpegLength > payload.length) return;
-  const blob = new Blob([payload.slice(20, 20 + jpegLength)], {type: "image/jpeg"});
+  let frame;
+  try {
+    frame = parseFramePayload(payload);
+  } catch (_) {
+    return;
+  }
+  const blob = new Blob([frame.jpeg], {type: "image/jpeg"});
   const next = URL.createObjectURL(blob);
   ui.screen.onload = () => {
     if (frameUrl) URL.revokeObjectURL(frameUrl);
@@ -392,11 +402,10 @@ async function sendUnlock(method, input) {
   }
 
   const secret = te.encode(normalized);
-  const payload = new Uint8Array(secret.length + 9);
-  payload[0] = method;
-  crypto.getRandomValues(payload.subarray(1, 9));
-  payload.set(secret, 9);
+  const nonce = crypto.getRandomValues(new Uint8Array(8));
+  const payload = unlockPayload(method, nonce, secret);
   overwriteSecret(secret);
+  overwriteSecret(nonce);
 
   const channel = controlChannel || mainChannel;
   try {
@@ -484,7 +493,7 @@ ui.forget.addEventListener("click", () => {
 
 ui.wake.addEventListener("click", async () => {
   try {
-    await sendOnce(controlChannel || mainChannel, TYPE_CONTROL, new Uint8Array([CONTROL_WAKE]));
+    await sendOnce(controlChannel || mainChannel, TYPE_CONTROL, controlPayload(CONTROL_WAKE));
   } catch (_) {
     setStatus("Wake could not be sent.");
   }
@@ -493,7 +502,7 @@ ui.wake.addEventListener("click", async () => {
 document.querySelectorAll("[data-nav]").forEach((button) => {
   button.addEventListener("click", async () => {
     try {
-      await sendOnce(mainChannel, TYPE_NAV, new Uint8Array([Number(button.dataset.nav)]));
+      await sendOnce(mainChannel, TYPE_NAV, navPayload(Number(button.dataset.nav)));
     } catch (_) {}
   });
 });
@@ -502,7 +511,7 @@ ui.sendText.addEventListener("click", async () => {
   const value = ui.textInput.value;
   if (!value) return;
   ui.textInput.value = "";
-  try { await sendOnce(mainChannel, TYPE_TEXT, te.encode(value)); } catch (_) {}
+  try { await sendOnce(mainChannel, TYPE_TEXT, textPayload(value)); } catch (_) {}
 });
 
 ui.sendUnlockPin.addEventListener("click", () => sendUnlock(UNLOCK_PIN, ui.unlockPin));
