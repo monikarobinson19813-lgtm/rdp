@@ -1,0 +1,37 @@
+name: WEB1 dev Worker dry run
+
+on:
+  push:
+    branches:
+      - web1-browser-controller
+  pull_request:
+    paths:
+      - 'relay/cloudflare/src/index.js'
+      - 'relay/cloudflare/wrangler.web1-dev.toml'
+      - '.github/workflows/web1-dev-worker-dry-run.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: relay/cloudflare
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify DEV Worker isolation config
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q '^name = "remotephone-relay-web1-dev"$' wrangler.web1-dev.toml
+          grep -q '^ENVIRONMENT = "development"$' wrangler.web1-dev.toml
+          grep -q '^name = "remotephone-relay"$' wrangler.toml
+          grep -q '^ENVIRONMENT = "production"$' wrangler.toml
+      - name: Wrangler dry run only
+        run: npx --yes wrangler@4 deploy --dry-run --config wrangler.web1-dev.toml
