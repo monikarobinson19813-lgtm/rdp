@@ -61,11 +61,9 @@ export class RelayRoom {
     if (!remoteMatch) return new Response("Not found", { status: 404 });
     const remoteId = remoteMatch[1];
 
-    const role = (request.headers.get("X-RemotePhone-Role") || "").toLowerCase();
-    const validRoles = new Set(["host", "controller", "host-control", "controller-control"]);
-    if (!validRoles.has(role)) {
-      return new Response("Missing role", { status: 400 });
-    }
+    const resolved = resolveRole(request);
+    if (resolved.error) return resolved.error;
+    const { role, selectedProtocol } = resolved;
 
     const isHostRole = role === "host" || role === "host-control";
     const isControlRole = role === "host-control" || role === "controller-control";
@@ -85,7 +83,7 @@ export class RelayRoom {
       }
 
       this.closeRoleForReplacement(role);
-      return this.acceptSocket(role, remoteId);
+      return this.acceptSocket(role, remoteId, selectedProtocol);
     }
 
     const hostRole = isControlRole ? "host-control" : "host";
@@ -94,10 +92,10 @@ export class RelayRoom {
     }
 
     this.closeRoleForReplacement(role);
-    return this.acceptSocket(role, remoteId);
+    return this.acceptSocket(role, remoteId, selectedProtocol);
   }
 
-  acceptSocket(role, remoteId) {
+  acceptSocket(role, remoteId, selectedProtocol = "") {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
@@ -105,7 +103,8 @@ export class RelayRoom {
     this.state.acceptWebSocket(server, [role, `remote:${remoteId}`]);
     server.serializeAttachment({ role, remoteId, closing: "" });
 
-    return new Response(null, { status: 101, webSocket: client });
+    const headers = selectedProtocol ? { "Sec-WebSocket-Protocol": selectedProtocol } : undefined;
+    return new Response(null, { status: 101, webSocket: client, headers });
   }
 
   webSocketMessage(ws, message) {
@@ -181,6 +180,47 @@ export class RelayRoom {
       );
     } catch (_) {}
   }
+}
+
+const VALID_ROLES = new Set(["host", "controller", "host-control", "controller-control"]);
+const BROWSER_PROTOCOLS = new Map([
+  ["remotephone.controller.v1", "controller"],
+  ["remotephone.controller-control.v1", "controller-control"],
+]);
+const MAX_SUBPROTOCOL_HEADER = 256;
+
+function resolveRole(request) {
+  const headerRole = (request.headers.get("X-RemotePhone-Role") || "").toLowerCase();
+  if (headerRole) {
+    if (!VALID_ROLES.has(headerRole)) {
+      return { error: new Response("Missing role", { status: 400 }) };
+    }
+
+    // Preserve the Android Host path exactly: Host roles ignore browser
+    // subprotocol offers. Controller roles reject mixed declarations so there
+    // is only one source of truth for role selection.
+    const isHostRole = headerRole === "host" || headerRole === "host-control";
+    if (!isHostRole && request.headers.has("Sec-WebSocket-Protocol")) {
+      return { error: new Response("Ambiguous controller role", { status: 400 }) };
+    }
+    return { role: headerRole, selectedProtocol: "" };
+  }
+
+  const raw = request.headers.get("Sec-WebSocket-Protocol") || "";
+  if (!raw || raw.length > MAX_SUBPROTOCOL_HEADER) {
+    return { error: new Response("Missing role", { status: 400 }) };
+  }
+
+  const offered = raw.split(",").map(v => v.trim()).filter(Boolean);
+  if (offered.length !== 1) {
+    return { error: new Response("Invalid controller protocol", { status: 400 }) };
+  }
+
+  const role = BROWSER_PROTOCOLS.get(offered[0]);
+  if (!role) {
+    return { error: new Response("Invalid controller protocol", { status: 400 }) };
+  }
+  return { role, selectedProtocol: offered[0] };
 }
 
 function peerRoleFor(role) {
