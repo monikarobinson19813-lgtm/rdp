@@ -1,0 +1,42 @@
+name: WEB1 Host fingerprint display
+
+on:
+  push:
+    branches:
+      - web1-browser-controller
+  pull_request:
+    paths:
+      - 'v0.5-baseline/app/src/main/java/com/remotephone/direct/HostActivity.java'
+      - 'v0.5-baseline/app/src/main/java/com/remotephone/direct/HostFingerprint.java'
+      - 'tests/web1/HostFingerprintTest.java'
+      - '.github/workflows/web1-host-fingerprint.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  f31-host-display:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Verify fingerprint derivation and format
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/web1-f31
+          javac -d build/web1-f31 \
+            v0.5-baseline/app/src/main/java/com/remotephone/direct/HostFingerprint.java \
+            tests/web1/HostFingerprintTest.java
+          java -cp build/web1-f31 com.remotephone.direct.HostFingerprintTest
+      - name: Verify Host screen uses display-only identity code
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'HostIdentity.getOrCreate().getPublic().getEncoded()' v0.5-baseline/app/src/main/java/com/remotephone/direct/HostActivity.java
+          grep -q 'Browser identity check:' v0.5-baseline/app/src/main/java/com/remotephone/direct/HostActivity.java
+          ! grep -q 'getPrivate' v0.5-baseline/app/src/main/java/com/remotephone/direct/HostActivity.java
