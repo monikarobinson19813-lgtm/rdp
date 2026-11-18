@@ -84,6 +84,19 @@ jobs:
           test -n "${RPD_TEST_KEY_PASSWORD:-}"
           gradle :app:testDebugUnitTest :app:assembleDebug --stacktrace
 
+      - name: Verify isolated DEV package and launcher label (E1a)
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          AAPT=$(find "${ANDROID_HOME}/build-tools" -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)
+          test -x "$AAPT"
+          "$AAPT" dump badging "$APK" > "$RUNNER_TEMP/web1-dev-host-badging.txt"
+          grep -E '^package:|^application-label:' "$RUNNER_TEMP/web1-dev-host-badging.txt"
+          grep -Eq "^package: name='com[.]remotephone[.]direct[.]web1dev' " "$RUNNER_TEMP/web1-dev-host-badging.txt"
+          grep -Fxq "application-label:'RemotePhone WEB1-DEV'" "$RUNNER_TEMP/web1-dev-host-badging.txt"
+          echo "WEB1 E1a package suffix and label PASS"
+
       - name: Record APK SHA-256
         shell: bash
         run: |
