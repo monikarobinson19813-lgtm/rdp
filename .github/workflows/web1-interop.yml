@@ -1,0 +1,52 @@
+name: WEB1 browser crypto interop
+
+on:
+  push:
+    branches:
+      - web1-browser-controller
+  pull_request:
+    paths:
+      - 'web/controller/**'
+      - 'tests/web1/**'
+      - 'v0.5-baseline/app/src/main/java/com/remotephone/direct/CryptoChannel.java'
+      - '.github/workflows/web1-interop.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  interop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Compile unmodified Java CryptoChannel harness
+        shell: bash
+        run: |
+          mkdir -p build/web1
+          javac -d build/web1 \
+            v0.5-baseline/app/src/main/java/com/remotephone/direct/CryptoChannel.java \
+            tests/web1/HostIdentity.java \
+            tests/web1/RelaySocket.java \
+            tests/web1/InteropHost.java
+      - name: Run Java to WebCrypto interoperability stress
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -cp build/web1 com.remotephone.direct.InteropHost > /tmp/web1-host.log 2>&1 &
+          HOST_PID=$!
+          trap 'kill "$HOST_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 100); do
+            grep -q '^PORT=' /tmp/web1-host.log && break
+            sleep 0.05
+          done
+          PORT="$(sed -n 's/^PORT=//p' /tmp/web1-host.log | head -1)"
+          test -n "$PORT"
+          node tests/web1/interop.mjs "$PORT"

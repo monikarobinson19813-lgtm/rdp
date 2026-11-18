@@ -1,0 +1,38 @@
+name: WEB1 static browser client
+
+on:
+  push:
+    branches:
+      - web1-browser-controller
+  pull_request:
+    paths:
+      - 'web/**'
+      - 'tests/web1/browser-policy.mjs'
+      - '.github/workflows/web1-browser-client.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  browser-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Verify F33/F36/F37 source policy
+        run: node tests/web1/browser-policy.mjs
+      - name: Verify F39 browser gesture payload against Java parser
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/web1-f39/classes
+          node tests/web1/gesture-payload.mjs build/web1-f39/gesture.bin
+          javac -d build/web1-f39/classes tests/web1/GesturePayloadTest.java
+          java -cp build/web1-f39/classes com.remotephone.direct.GesturePayloadTest build/web1-f39/gesture.bin

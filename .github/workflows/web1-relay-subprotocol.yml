@@ -1,0 +1,26 @@
+name: WEB1 relay subprotocol
+
+on:
+  push:
+    branches:
+      - web1-browser-controller
+  pull_request:
+    paths:
+      - 'relay/cloudflare/src/index.js'
+      - 'tests/web1/relay-subprotocol.mjs'
+      - '.github/workflows/web1-relay-subprotocol.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  f32:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run F32 10-case Worker compatibility suite
+        run: node --experimental-default-type=module tests/web1/relay-subprotocol.mjs

@@ -1,0 +1,108 @@
+name: WEB1 Host APK compile proof
+
+on:
+  push:
+    branches:
+      - web1-browser-controller
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Rebuild Android source package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat source-parts/part*.b64 | tr -d '\r\n' | base64 --decode > remotephone-project-fixed.zip
+          unzip -t remotephone-project-fixed.zip
+          unzip -o remotephone-project-fixed.zip
+
+      - name: Use reviewed WEB1 Android baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d v0.5-baseline/app
+          rm -rf app
+          cp -a v0.5-baseline/app app
+          grep -q 'Browser identity check:' app/src/main/java/com/remotephone/direct/HostActivity.java
+          grep -q 'HostFingerprint.verificationCode' app/src/main/java/com/remotephone/direct/HostActivity.java
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Prepare persistent test signing
+        shell: bash
+        env:
+          RPD_TEST_KEYSTORE_B64: ${{ secrets.RPD_TEST_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RPD_TEST_KEYSTORE_B64:-}" ]; then
+            echo "Persistent test signing secret is not configured"
+            exit 1
+          fi
+          signing_keystore="$RUNNER_TEMP/remotephone-test-signing.jks"
+          case "$signing_keystore" in
+            "$GITHUB_WORKSPACE"/*)
+              echo "Signing keystore path must stay outside the repository workspace"
+              exit 1
+              ;;
+          esac
+          printf '%s' "$RPD_TEST_KEYSTORE_B64" | base64 -d > "$signing_keystore"
+          chmod 600 "$signing_keystore"
+          test -s "$signing_keystore"
+
+      - name: Compile tests and Host APK
+        shell: bash
+        env:
+          RPD_REQUIRE_TEST_SIGNING: 'true'
+          RPD_TEST_KEYSTORE_PATH: ${{ runner.temp }}/remotephone-test-signing.jks
+          RPD_TEST_STORE_PASSWORD: ${{ secrets.RPD_TEST_STORE_PASSWORD }}
+          RPD_TEST_KEY_ALIAS: ${{ secrets.RPD_TEST_KEY_ALIAS }}
+          RPD_TEST_KEY_PASSWORD: ${{ secrets.RPD_TEST_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -s "$RPD_TEST_KEYSTORE_PATH"
+          test -n "${RPD_TEST_STORE_PASSWORD:-}"
+          test -n "${RPD_TEST_KEY_ALIAS:-}"
+          test -n "${RPD_TEST_KEY_PASSWORD:-}"
+          gradle :app:testDebugUnitTest :app:assembleDebug --stacktrace
+
+      - name: Record APK SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          sha256sum "$APK" | tee web1-host-apk.sha256
+          echo "WEB1 F41 Host APK compile PASS"
+
+      - name: Remove transient test keystore
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/remotephone-test-signing.jks"
+
+      - name: Upload Host APK artifact only
+        uses: actions/upload-artifact@v4
+        with:
+          name: WEB1-host-apk-${{ github.sha }}
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            web1-host-apk.sha256
+          if-no-files-found: error
+          retention-days: 7

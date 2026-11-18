@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>RemotePhone Controller</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main>
+    <section id="connect-panel" class="panel">
+      <h1>RemotePhone Controller</h1>
+      <p class="muted">Browser Controller. The Host must already be running RemotePhone Direct.</p>
+
+      <label for="remote-id">Remote ID</label>
+      <input id="remote-id" type="text" inputmode="numeric" autocomplete="off" maxlength="11" placeholder="000 000 000">
+
+      <label for="session-pin">Session PIN</label>
+      <input id="session-pin" type="text" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="6 digits">
+
+      <div class="row">
+        <button id="connect">Connect</button>
+        <button id="forget" class="secondary">Forget Host</button>
+      </div>
+      <p id="connect-status" class="status">Disconnected</p>
+    </section>
+
+    <section id="identity-panel" class="panel hidden" aria-live="polite">
+      <h2>Verify Host identity</h2>
+      <p>Compare this code with <strong>Browser identity check</strong> shown on the Host phone.</p>
+      <p id="identity-code" class="identity-code"></p>
+      <div class="row">
+        <button id="identity-confirm">Codes match</button>
+        <button id="identity-cancel" class="secondary">Cancel</button>
+      </div>
+    </section>
+
+    <section id="viewer-panel" class="panel hidden">
+      <div class="toolbar">
+        <span id="remote-status">Connecting…</span>
+        <button id="disconnect" class="secondary">Disconnect</button>
+      </div>
+
+      <div id="screen-wrap">
+        <img id="screen" alt="Remote Host screen" draggable="false">
+      </div>
+
+      <div class="row controls">
+        <button data-nav="1">Back</button>
+        <button data-nav="2">Home</button>
+        <button data-nav="3">Recents</button>
+        <button id="wake">Wake</button>
+      </div>
+
+      <div class="row">
+        <input id="text-input" type="text" autocomplete="off" placeholder="Text for focused field">
+        <button id="send-text">Send text</button>
+      </div>
+
+      <section id="unlock-panel" class="subpanel hidden">
+        <h2>Host locked</h2>
+        <p class="muted">Enter the known device credential for this use only. It is never stored or retried.</p>
+        <div class="row">
+          <input id="unlock-pin" type="text" inputmode="numeric" autocomplete="off" maxlength="16" placeholder="Device PIN">
+          <button id="send-unlock-pin">Unlock PIN</button>
+        </div>
+        <div class="row">
+          <input id="unlock-pattern" type="text" inputmode="numeric" autocomplete="off" maxlength="17" placeholder="Pattern e.g. 1-2-5-8">
+          <button id="send-unlock-pattern">Unlock pattern</button>
+        </div>
+        <p id="unlock-status" class="status"></p>
+      </section>
+    </section>
+  </main>
+
+  <script type="module" src="./app.mjs"></script>
+</body>
+</html>

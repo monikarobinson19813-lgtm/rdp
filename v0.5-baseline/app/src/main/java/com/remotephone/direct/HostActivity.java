@@ -15,7 +15,7 @@ import java.util.Locale;
 public class HostActivity extends Activity {
     private static final int REQ_CAPTURE = 4401;
     private static final int PORT = 49200;
-    private TextView accessStatus, addressText, codeText, hostStatus, deviceIdText, batteryStatus, oemGuidance;
+    private TextView accessStatus, addressText, codeText, hostStatus, deviceIdText, identityCheckText, batteryStatus, oemGuidance;
     private EditText friendlyName;
     private String pairingCode;
     private String deviceId;
@@ -65,6 +65,10 @@ public class HostActivity extends Activity {
         deviceIdText = t("", 22);
         deviceIdText.setPadding(0, 28, 0, 6);
         root.addView(deviceIdText);
+
+        identityCheckText = t("", 16);
+        identityCheckText.setPadding(0, 8, 0, 6);
+        root.addView(identityCheckText);
 
         codeText = t("", 24);
         root.addView(codeText);
@@ -152,6 +156,7 @@ public class HostActivity extends Activity {
         refreshBatteryStatus();
         refreshOemGuidance();
         deviceIdText.setText("Remote ID:  " + formatDeviceId(deviceId));
+        refreshIdentityCheck();
         codeText.setText("Session PIN:  " + pairingCode);
 
         List<String> ips = NetUtil.ipv4Addresses();
@@ -161,6 +166,16 @@ public class HostActivity extends Activity {
         addressText.setText(s.toString().trim());
 
         hostStatus.setText(HostService.isRunning() ? "✓ Host ready" : "Host stopped");
+    }
+
+    private void refreshIdentityCheck() {
+        if (identityCheckText == null) return;
+        try {
+            byte[] spki = HostIdentity.getOrCreate().getPublic().getEncoded();
+            identityCheckText.setText("Browser identity check:  " + HostFingerprint.verificationCode(spki));
+        } catch (Exception ignored) {
+            identityCheckText.setText("Browser identity check unavailable");
+        }
     }
 
     private void refreshBatteryStatus() {

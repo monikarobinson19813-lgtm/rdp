@@ -1,0 +1,41 @@
+:root {
+  color-scheme: dark;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #111;
+  color: #f4f4f4;
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; background: #111; }
+main { width: min(100%, 920px); margin: 0 auto; padding: 16px; }
+.panel { background: #1b1b1b; border: 1px solid #333; border-radius: 14px; padding: 16px; margin-bottom: 14px; }
+.subpanel { margin-top: 12px; padding: 12px; border: 1px solid #444; border-radius: 10px; }
+.hidden { display: none !important; }
+h1, h2 { margin-top: 0; }
+label { display: block; margin-top: 12px; margin-bottom: 6px; }
+input, button {
+  min-height: 44px;
+  border-radius: 9px;
+  border: 1px solid #555;
+  background: #242424;
+  color: #fff;
+  padding: 10px 12px;
+  font: inherit;
+}
+input { width: 100%; }
+button { cursor: pointer; background: #e8e8e8; color: #111; font-weight: 650; }
+button.secondary { background: #2b2b2b; color: #fff; }
+.row { display: flex; gap: 8px; margin-top: 12px; }
+.row > input { flex: 1; }
+.row > button { flex: 0 0 auto; }
+.toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.status, .muted { color: #bbb; }
+.identity-code { font: 700 24px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .08em; word-spacing: .25em; }
+#screen-wrap { width: 100%; min-height: 300px; display: grid; place-items: center; background: #000; border-radius: 10px; overflow: hidden; touch-action: none; }
+#screen { display: block; max-width: 100%; max-height: 72vh; user-select: none; -webkit-user-drag: none; }
+.controls { flex-wrap: wrap; }
+@media (max-width: 600px) {
+  main { padding: 8px; }
+  .row { flex-wrap: wrap; }
+  .row > button { flex: 1 1 auto; }
+  #screen { max-height: 68vh; }
+}
