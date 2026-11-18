@@ -586,13 +586,11 @@ public class HostService extends Service {
         streamHeight = newStreamHeight;
         streamDensity = newDensity;
 
-        try { if (virtualDisplay != null) virtualDisplay.release(); } catch (Exception ignored) {}
-        try { if (reader != null) reader.close(); } catch (Exception ignored) {}
-
         final int captureW = streamWidth;
         final int captureH = streamHeight;
-        reader = ImageReader.newInstance(captureW, captureH, PixelFormat.RGBA_8888, 2);
-        reader.setOnImageAvailableListener(r -> {
+        ImageReader newReader = ImageReader.newInstance(
+                captureW, captureH, PixelFormat.RGBA_8888, 2);
+        newReader.setOnImageAvailableListener(r -> {
             long now = SystemClock.elapsedRealtime();
             if (now - lastFrameAt < targetFrameIntervalMs() || !encodeBusy.compareAndSet(false, true)) {
                 Image skip = r.acquireLatestImage();
@@ -611,10 +609,28 @@ public class HostService extends Service {
             });
         }, new Handler(Looper.getMainLooper()));
 
-        virtualDisplay = projection.createVirtualDisplay("RemotePhone",
-                captureW, captureH, streamDensity,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                reader.getSurface(), null, null);
+        ImageReader previousReader = reader;
+        try {
+            if (virtualDisplay == null) {
+                virtualDisplay = projection.createVirtualDisplay("RemotePhone",
+                        captureW, captureH, streamDensity,
+                        DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                        newReader.getSurface(), null, null);
+            } else {
+                // Android 14+ permits only one createVirtualDisplay() call per
+                // MediaProjection session. Reconfigure the existing display
+                // instead of starting a second capture session.
+                virtualDisplay.resize(captureW, captureH, streamDensity);
+                virtualDisplay.setSurface(newReader.getSurface());
+            }
+            reader = newReader;
+            if (previousReader != null && previousReader != newReader) {
+                try { previousReader.close(); } catch (Exception ignored) {}
+            }
+        } catch (RuntimeException e) {
+            try { newReader.close(); } catch (Exception ignored) {}
+            throw e;
+        }
         CryptoChannel c = channel;
         if (c != null) sendInfo(c);
     }

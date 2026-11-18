@@ -1,0 +1,83 @@
+name: P1 MediaProjection reconfigure
+
+on:
+  push:
+    branches:
+      - p1-mediaprojection-reconfigure
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify Android 14 MediaProjection reconfigure rule
+        run: node tests/p1/mediaprojection-reconfigure.mjs
+
+      - name: Rebuild Android source package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat source-parts/part*.b64 | tr -d '\r\n' | base64 --decode > remotephone-project-fixed.zip
+          unzip -t remotephone-project-fixed.zip
+          unzip -o remotephone-project-fixed.zip
+          rm -rf app
+          cp -a v0.5-baseline/app app
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Prepare persistent test signing
+        shell: bash
+        env:
+          RPD_TEST_KEYSTORE_B64: ${{ secrets.RPD_TEST_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "${RPD_TEST_KEYSTORE_B64:-}"
+          signing_keystore="$RUNNER_TEMP/remotephone-test-signing.jks"
+          printf '%s' "$RPD_TEST_KEYSTORE_B64" | base64 -d > "$signing_keystore"
+          chmod 600 "$signing_keystore"
+          test -s "$signing_keystore"
+
+      - name: Test and build debug APK
+        shell: bash
+        env:
+          RPD_REQUIRE_TEST_SIGNING: 'true'
+          RPD_TEST_KEYSTORE_PATH: ${{ runner.temp }}/remotephone-test-signing.jks
+          RPD_TEST_STORE_PASSWORD: ${{ secrets.RPD_TEST_STORE_PASSWORD }}
+          RPD_TEST_KEY_ALIAS: ${{ secrets.RPD_TEST_KEY_ALIAS }}
+          RPD_TEST_KEY_PASSWORD: ${{ secrets.RPD_TEST_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          gradle :app:testDebugUnitTest :app:assembleDebug --stacktrace
+          sha256sum app/build/outputs/apk/debug/app-debug.apk | tee p1-mediaprojection-apk.sha256
+
+      - name: Remove transient test keystore
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/remotephone-test-signing.jks"
+
+      - name: Upload candidate APK artifact only
+        uses: actions/upload-artifact@v4
+        with:
+          name: P1-mediaprojection-candidate-${{ github.sha }}
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            p1-mediaprojection-apk.sha256
+          if-no-files-found: error
+          retention-days: 7
