@@ -2,7 +2,7 @@ package com.remotephone.direct;
 
 public final class RelayConfig {
     // Cloudflare relay endpoint for internet Remote ID routing.
-    public static final String BASE_URL = "https://remotephone-relay.monikarobinson19813.workers.dev";
+    public static final String BASE_URL = "https://remotephone-relay-web1-dev.monikarobinson19813.workers.dev";
 
     private RelayConfig() {}
 

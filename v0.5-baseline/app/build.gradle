@@ -42,6 +42,9 @@ android {
 
     buildTypes {
         debug {
+            // E1a: isolated app ID and launcher label for DEV-only APK; never replace #168.
+            applicationIdSuffix '.web1dev'
+            resValue 'string', 'app_name', 'RemotePhone WEB1-DEV'
             if (rpdTestSigningConfigured) {
                 signingConfig signingConfigs.testsign
             }
