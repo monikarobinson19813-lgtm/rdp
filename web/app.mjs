@@ -9,7 +9,7 @@ import {
   parseFramePayload,
 } from "./controller/protocol-payloads.mjs";
 
-const RELAY_HOST = "remotephone-relay.monikarobinson19813.workers.dev";
+const RELAY_HOST = "remotephone-relay-web1-dev.monikarobinson19813.workers.dev";
 const MAIN_PROTOCOL = "remotephone.controller.v1";
 const CONTROL_PROTOCOL = "remotephone.controller-control.v1";
 
