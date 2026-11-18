@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - web1-browser-controller
+      - web1-dev-host-ci
   workflow_dispatch:
 
 permissions:
